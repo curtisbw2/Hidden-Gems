@@ -20,6 +20,7 @@ from cogs.email_linking import EmailLinkingCog
 from cogs.csv_import import CSVImportCog
 from cogs.alerts import AlertsCog
 from cogs.status import StatusCog
+from cogs.access_panel import AccessPanelCog
 
 logger = logging.getLogger(__name__)
 
