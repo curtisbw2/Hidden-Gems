@@ -98,28 +98,37 @@ class HiddenGemsBot(commands.Bot):
 
 async def main():
     """Main entry point."""
-    # Load config
-    config = Config.from_env()
-    
-    if not config.DISCORD_TOKEN:
-        logger.error("DISCORD_TOKEN not set in environment")
-        sys.exit(1)
-    
-    # Setup logging
-    setup_logging(config.LOG_LEVEL)
-    
-    # Initialize database
-    db = Database(config.DB_PATH)
-    
-    # Create and run bot
-    bot = HiddenGemsBot(config, db)
-    
     try:
+        # Load config
+        config = Config.from_env()
+        
+        if not config.DISCORD_TOKEN:
+            print("ERROR: DISCORD_TOKEN not set in environment variables")
+            print("Please set DISCORD_TOKEN in Railway environment variables")
+            sys.exit(1)
+        
+        # Setup logging
+        setup_logging(config.LOG_LEVEL)
+        logger.info("Starting Hidden Gems bot...")
+        
+        # Initialize database
+        logger.info(f"Initializing database at {config.DB_PATH}")
+        db = Database(config.DB_PATH)
+        
+        # Create and run bot
+        bot = HiddenGemsBot(config, db)
+        
+        logger.info("Connecting to Discord...")
         await bot.start(config.DISCORD_TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot shutting down...")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        print(f"FATAL ERROR: {e}")
+        sys.exit(1)
     finally:
-        await bot.close()
+        if 'bot' in locals():
+            await bot.close()
 
 
 if __name__ == "__main__":
