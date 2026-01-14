@@ -1,7 +1,7 @@
 """Market data provider interface and implementations."""
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -110,4 +110,5 @@ class YahooFinanceProvider(MarketDataProvider):
         except Exception as e:
             logger.error(f"Failed to fetch daily bars for {ticker}: {e}")
             return None
+
 
