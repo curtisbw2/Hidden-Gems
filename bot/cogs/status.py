@@ -60,9 +60,11 @@ class StatusCog(commands.Cog):
         # Get last alert run time
         last_alert_run = await self.db.get_last_alert_run_time()
         if last_alert_run:
-            last_alert_run_str = last_alert_run.strftime("%Y-%m-%d %H:%M UTC")
+            if isinstance(last_alert_run, str):
+                last_alert_run = datetime.fromisoformat(last_alert_run)
+            last_alert_str = last_alert_run.strftime("%Y-%m-%d %H:%M UTC")
         else:
-            last_alert_run_str = "Never"
+            last_alert_str = "Never"
         
         # Build embed
         embed = discord.Embed(
@@ -77,8 +79,8 @@ class StatusCog(commands.Cog):
         embed.add_field(name="Pending Verify Requests", value=str(pending_count), inline=True)
         
         embed.add_field(name="Last CSV Import", value=last_import_str, inline=True)
-        embed.add_field(name="Last Alert Run", value=last_alert_run_str, inline=True)
         embed.add_field(name="Next Alert Run", value=next_alert_str, inline=True)
+        embed.add_field(name="Last Alert Run", value=last_alert_str, inline=True)
         embed.add_field(name="Alert Tickers", value=", ".join(self.config.get_ticker_list()), inline=False)
         
         embed.set_footer(text=f"Bot Version: 1.0.0")

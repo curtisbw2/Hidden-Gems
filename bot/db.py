@@ -128,7 +128,7 @@ class Database:
             )
         """)
         
-        # Alert tracking table (legacy, kept for compatibility)
+        # Alert tracking table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS alert_history (
                 ticker VARCHAR(10),
@@ -139,11 +139,11 @@ class Database:
             )
         """)
         
-        # Alert state table (per-ticker tracking)
+        # Alert state table (for tracking last alert date and run time per ticker)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS alert_state (
                 ticker VARCHAR(10) PRIMARY KEY,
-                last_alert_date TEXT,
+                last_alert_date DATE,
                 last_alert_pct DOUBLE PRECISION,
                 last_run_at TIMESTAMP WITH TIME ZONE
             )
@@ -241,7 +241,7 @@ class Database:
             )
         """)
         
-        # Alert tracking table (legacy, kept for compatibility)
+        # Alert tracking table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS alert_history (
                 ticker TEXT,
@@ -252,7 +252,7 @@ class Database:
             )
         """)
         
-        # Alert state table (per-ticker tracking)
+        # Alert state table (for tracking last alert date and run time per ticker)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS alert_state (
                 ticker TEXT PRIMARY KEY,
@@ -815,97 +815,72 @@ class Database:
                     (ticker, today, percent_change)
                 )
     
-    # Alert state operations (new RTH alert system)
+    # Alert state operations
     async def get_alert_state(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get alert state for a ticker."""
+        """Get alert state for ticker."""
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT ticker, last_alert_date, last_alert_pct, last_run_at FROM alert_state WHERE ticker = $1",
+                    "SELECT * FROM alert_state WHERE ticker = $1",
                     ticker
                 )
-                if row:
-                    return {
-                        "ticker": row["ticker"],
-                        "last_alert_date": row["last_alert_date"],
-                        "last_alert_pct": row["last_alert_pct"],
-                        "last_run_at": row["last_run_at"].isoformat() if row["last_run_at"] else None
-                    }
-                return None
+                return dict(row) if row else None
         else:
             async with self.get_connection() as db:
                 async with db.execute(
-                    "SELECT ticker, last_alert_date, last_alert_pct, last_run_at FROM alert_state WHERE ticker = ?",
+                    "SELECT * FROM alert_state WHERE ticker = ?",
                     (ticker,)
                 ) as cursor:
                     row = await cursor.fetchone()
-                    if row:
-                        return {
-                            "ticker": row["ticker"],
-                            "last_alert_date": row["last_alert_date"],
-                            "last_alert_pct": row["last_alert_pct"],
-                            "last_run_at": row["last_run_at"] if row["last_run_at"] else None
-                        }
-                    return None
+                    return dict(row) if row else None
     
-    async def update_alert_state(self, ticker: str, alert_date: str, percent_change: float) -> None:
-        """Update alert state for a ticker."""
-        now = datetime.now(timezone.utc)
+    async def update_alert_state(
+        self, 
+        ticker: str, 
+        last_alert_date: Optional[str], 
+        last_alert_pct: Optional[float],
+        last_run_at: Optional[datetime] = None
+    ) -> None:
+        """Update alert state for ticker."""
+        if last_run_at is None:
+            last_run_at = datetime.now(timezone.utc)
+        
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO alert_state (ticker, last_alert_date, last_alert_pct, last_run_at)
                        VALUES ($1, $2, $3, $4)
                        ON CONFLICT (ticker) 
-                       DO UPDATE SET last_alert_date = $2, last_alert_pct = $3, last_run_at = $4""",
-                    ticker, alert_date, percent_change, now
+                       DO UPDATE SET 
+                           last_alert_date = COALESCE($2, alert_state.last_alert_date),
+                           last_alert_pct = COALESCE($3, alert_state.last_alert_pct),
+                           last_run_at = $4""",
+                    ticker, last_alert_date, last_alert_pct, last_run_at
                 )
         else:
             async with self.get_connection() as db:
                 await db.execute(
                     """INSERT OR REPLACE INTO alert_state (ticker, last_alert_date, last_alert_pct, last_run_at)
                        VALUES (?, ?, ?, ?)""",
-                    (ticker, alert_date, percent_change, now.isoformat())
-                )
-    
-    async def update_alert_run_time(self, ticker: str) -> None:
-        """Update last run time for a ticker (without alerting)."""
-        now = datetime.now(timezone.utc)
-        if self.use_postgres:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    """INSERT INTO alert_state (ticker, last_run_at)
-                       VALUES ($1, $2)
-                       ON CONFLICT (ticker) 
-                       DO UPDATE SET last_run_at = $2""",
-                    ticker, now
-                )
-        else:
-            async with self.get_connection() as db:
-                await db.execute(
-                    """INSERT OR REPLACE INTO alert_state (ticker, last_run_at)
-                       VALUES (?, ?)""",
-                    (ticker, now.isoformat())
+                    (ticker, last_alert_date, last_alert_pct, last_run_at)
                 )
     
     async def get_last_alert_run_time(self) -> Optional[datetime]:
-        """Get the most recent last_run_at across all tickers."""
+        """Get the most recent last_run_at timestamp across all tickers."""
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT MAX(last_run_at) as max_run FROM alert_state"
+                    "SELECT MAX(last_run_at) as max_run_at FROM alert_state"
                 )
-                if row and row["max_run"]:
-                    return row["max_run"]
-                return None
+                return row['max_run_at'] if row and row['max_run_at'] else None
         else:
             async with self.get_connection() as db:
                 async with db.execute(
-                    "SELECT MAX(last_run_at) as max_run FROM alert_state"
+                    "SELECT MAX(last_run_at) as max_run_at FROM alert_state"
                 ) as cursor:
                     row = await cursor.fetchone()
-                    if row and row["max_run"]:
-                        return datetime.fromisoformat(row["max_run"])
+                    if row and row["max_run_at"]:
+                        return datetime.fromisoformat(row["max_run_at"])
                     return None
     
     # Import history

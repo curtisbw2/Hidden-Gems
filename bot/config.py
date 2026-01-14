@@ -61,7 +61,7 @@ class Config:
     STRICT_REVOKE: bool = False  # If True, revoke Premium if not in paid list
     
     # Alerts
-    ALERT_TIME: str = "16:10"  # HH:MM format (default: 4:10 PM ET after market close)
+    ALERT_TIME: str = "16:10"  # HH:MM format (default: 16:10 ET after market close)
     ALERT_TIMEZONE: str = "America/New_York"
     ALERT_CHECK_INTERVAL_MINUTES: Optional[int] = None  # If set, check every N minutes but only alert once per day
     ALERT_THRESHOLD_PERCENT: float = 10.0

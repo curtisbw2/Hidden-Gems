@@ -10,7 +10,7 @@ A production-ready Discord bot for managing an options trading community, featur
   - **Mod Queue**: Submit proof via `/verify_premium` for manual review
   - **Email Linking**: Link Substack email via `/link_email` + `/confirm_code` (no screenshot required)
 - **CSV Import**: Import paid subscribers from Substack exports, automatic role sync
-- **Price Alerts**: RTH (Regular Trading Hours) close-to-close daily move monitoring (±10% threshold)
+- **Price Alerts**: Daily monitoring of regular-hours close-to-close price moves (±10% threshold)
 - **Privacy-First**: Emails are hashed (SHA-256), no raw images stored
 
 ## Requirements
@@ -199,13 +199,7 @@ The bot can run on any platform that supports Python:
 - `/submit_proof` - Submit proof attachment after `/verify_premium`
 - `/link_email <email>` - Link Substack email (sends OTP)
 - `/confirm_code <code> <email>` - Confirm email with OTP code
-- `/status` - View bot status and statistics
-- `/alerts_test [force:boolean]` - Manually test alerts for all tickers (Admin only)
-  - `force=false`: Respects once-per-day rule
-  - `force=true`: Bypasses date check and posts if threshold met
-- `/alerts_debug ticker:<str>` - Debug alert calculation for a ticker (Admin only)
-  - Shows last 10 days of close prices and calculation details
-  - Does NOT post to #alerts channel
+- `/status` - View bot status
 
 ### Mod/Admin Commands
 
@@ -218,8 +212,47 @@ The bot can run on any platform that supports Python:
 - `/import_paid_csv <file>` - Import paid subscribers from CSV (Admin only)
 - `/sync_premium` - Sync Premium roles with paid email list (Admin only)
 - `/audit_premium` - Remove Premium from users not in paid list (Admin only)
-- `/alerts_test [force:boolean]` - Manually test alerts for all tickers (Admin only)
-- `/alerts_debug ticker:<str>` - Debug alert calculation for a ticker (Admin only)
+- `/alerts_test [force:boolean]` - Test alert check immediately (Admin only)
+- `/alerts_debug <ticker>` - Debug ticker data and alert state (Admin only)
+
+## Price Alerts
+
+The bot monitors tickers for regular-hours (RTH) daily moves of ±10% or more.
+
+### How Alerts Work
+
+- **Calculation Method**: Alerts use regular-hours close-to-close percentage change:
+  ```
+  %move = (RTH_close_today - RTH_close_prev) / RTH_close_prev * 100
+  ```
+- **Schedule**: Runs once per trading day at 16:10 ET (default), after market close
+- **Data Source**: Uses yfinance to fetch daily OHLC bars (regular-hours close)
+- **Anti-Spam**: Posts at most one alert per ticker per trading day
+- **Holiday Handling**: If no new daily bar exists (market holiday), the check is skipped and logged
+
+### Alert Format
+
+Alerts are posted to `#alerts` channel with:
+- Title: "🚨 10% Move Alert — $TICKER"
+- Fields: Price, Prev Close, Move (%), Date, As of (timestamp)
+- Color: Green for positive moves, Red for negative moves
+
+### Testing Commands
+
+- `/alerts_test [force:boolean]` - Run alert check immediately
+  - `force=false`: Respects once-per-day rule (default)
+  - `force=true`: Bypasses last_alert_date check and posts if threshold met
+- `/alerts_debug <ticker>` - View ticker data and alert state
+  - Shows last 5 daily bars with closes
+  - Displays computed percent change
+  - Shows alert state (last alert date, last run time)
+
+### Troubleshooting Alerts
+
+- **No alerts on market holiday**: This is expected. The bot checks for new daily bars; if none exist, it skips and logs.
+- **Insufficient data error**: Ensure ticker symbol is correct and has trading history.
+- **Channel not found**: Verify `#alerts` channel exists and bot has permission to send embeds.
+- **Check logs**: Review `#bot-logs` channel for detailed run summaries and errors.
 
 ## CSV Import Format
 
@@ -245,10 +278,10 @@ All configuration is done via environment variables. See `.env.example` for all 
 **Key Settings:**
 - `AUTO_ASSIGN_FREE_ON_JOIN` - Auto-assign free role on join (default: true)
 - `STRICT_REVOKE` - Revoke Premium if not in paid list (default: false)
-- `ALERT_TIME` - Scheduled alert time (default: 16:10 ET, after market close)
+- `ALERT_TIME` - Scheduled alert time (default: 16:10 ET)
 - `ALERT_TIMEZONE` - Timezone for alert schedule (default: America/New_York)
-- `ALERT_THRESHOLD_PERCENT` - Alert threshold in absolute percent (default: 10.0%)
-- `ALERT_TICKERS` - Comma-separated ticker list (default: RR,ONDS,ACHR,UMAC,AMPX,LPTH)
+- `ALERT_THRESHOLD_PERCENT` - Alert threshold (default: 10.0%)
+- `ALERT_TICKERS` - Comma-separated ticker list
 - `ALERT_CHECK_INTERVAL_MINUTES` - Optional: check every N minutes instead of scheduled time
 
 ## Security & Privacy
@@ -290,9 +323,12 @@ All configuration is done via environment variables. See `.env.example` for all 
 - Check SendGrid account isn't suspended
 
 **Alerts not triggering:**
-- Check `#alerts` channel exists
+- Check `#alerts` channel exists and bot has permission to send embeds
 - Verify ticker symbols are correct (use Yahoo Finance format)
-- Check bot logs for errors
+- Check bot logs in `#bot-logs` channel for errors
+- Use `/alerts_debug <ticker>` to verify data is being fetched correctly
+- Ensure market has closed (alerts run at 16:10 ET by default, after regular trading hours)
+- On market holidays, alerts will skip if no new daily bar exists yet
 
 ## Project Structure
 
