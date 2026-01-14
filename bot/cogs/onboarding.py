@@ -19,33 +19,77 @@ class OnboardingButtons(discord.ui.View):
     @discord.ui.button(label="Get Free Access", style=discord.ButtonStyle.primary, emoji="🆓")
     async def get_free(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Assign free role."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.errors.InteractionResponded:
+            # Already responded, try followup
+            pass
         
         guild = interaction.guild
         if not guild:
-            await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
+            except:
+                await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+            return
+        
+        # Get member object (not just user)
+        member = guild.get_member(interaction.user.id)
+        if not member:
+            try:
+                await interaction.followup.send("❌ Could not find your member information. Please try again.", ephemeral=True)
+            except:
+                await interaction.response.send_message("❌ Could not find your member information. Please try again.", ephemeral=True)
             return
         
         # Get free role
-        free_role = await self.bot.cogs["OnboardingCog"].get_role(guild, "free")
-        if not free_role:
-            await interaction.followup.send("❌ Free Member role not found. Please contact an admin.", ephemeral=True)
+        onboarding_cog = self.bot.get_cog("OnboardingCog")
+        if not onboarding_cog:
+            try:
+                await interaction.followup.send("❌ Bot configuration error. Please contact an admin.", ephemeral=True)
+            except:
+                await interaction.response.send_message("❌ Bot configuration error. Please contact an admin.", ephemeral=True)
             return
         
-        member = interaction.user
+        free_role = await onboarding_cog.get_role(guild, "free")
+        if not free_role:
+            try:
+                await interaction.followup.send("❌ Free Member role not found. Please contact an admin.", ephemeral=True)
+            except:
+                await interaction.response.send_message("❌ Free Member role not found. Please contact an admin.", ephemeral=True)
+            return
+        
         if free_role in member.roles:
-            await interaction.followup.send("✅ You already have the Free Member role!", ephemeral=True)
+            try:
+                await interaction.followup.send("✅ You already have the Free Member role!", ephemeral=True)
+            except:
+                await interaction.response.send_message("✅ You already have the Free Member role!", ephemeral=True)
             return
         
         try:
             await member.add_roles(free_role, reason="Onboarding: Get Free Access button")
-            await interaction.followup.send("✅ You've been granted Free Member access!", ephemeral=True)
+            try:
+                await interaction.followup.send("✅ You've been granted Free Member access!", ephemeral=True)
+            except:
+                await interaction.response.send_message("✅ You've been granted Free Member access!", ephemeral=True)
             logger.info(f"Assigned free role to {member} via button")
         except discord.Forbidden:
-            await interaction.followup.send("❌ I don't have permission to assign roles.", ephemeral=True)
+            error_msg = "❌ I don't have permission to assign roles. Please ensure the bot role is above the Free Member role."
+            try:
+                await interaction.followup.send(error_msg, ephemeral=True)
+            except:
+                await interaction.response.send_message(error_msg, ephemeral=True)
+            logger.error(f"Forbidden error assigning free role to {member}")
         except Exception as e:
-            logger.error(f"Error assigning free role: {e}")
-            await interaction.followup.send("❌ An error occurred. Please contact an admin.", ephemeral=True)
+            logger.error(f"Error assigning free role: {e}", exc_info=True)
+            error_msg = f"❌ An error occurred: {str(e)}. Please contact an admin."
+            try:
+                await interaction.followup.send(error_msg, ephemeral=True)
+            except:
+                try:
+                    await interaction.response.send_message(error_msg, ephemeral=True)
+                except:
+                    pass
     
     @discord.ui.button(label="Verify Premium (Mod Queue)", style=discord.ButtonStyle.secondary, emoji="💎")
     async def verify_premium_info(self, interaction: discord.Interaction, button: discord.ui.Button):
