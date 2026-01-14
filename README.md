@@ -212,6 +212,7 @@ The bot can run on any platform that supports Python:
 - `/import_paid_csv <file>` - Import paid subscribers from CSV (Admin only)
 - `/sync_premium` - Sync Premium roles with paid email list (Admin only)
 - `/audit_premium` - Remove Premium from users not in paid list (Admin only)
+- `/clear_paid_emails confirm:<boolean>` - Clear all paid emails from database (Admin only, requires confirm=true)
 - `/alerts_test [force:boolean]` - Test alert check immediately (Admin only)
 - `/alerts_debug <ticker>` - Debug ticker data and alert state (Admin only)
 
