@@ -67,11 +67,11 @@ class YahooFinanceProvider(MarketDataProvider):
             return None
     
     async def get_daily_bars(self, ticker: str, days: int = 10) -> Optional[List[Dict]]:
-        \"\"\"
+        """
         Get daily bars (OHLC) for ticker.
         Returns list of dicts with keys: 'date', 'open', 'high', 'low', 'close', 'volume'.
         Dates are trading dates (regular-hours close dates).
-        \"\"\"
+        """
         if not self.yf:
             return None
         
@@ -81,7 +81,7 @@ class YahooFinanceProvider(MarketDataProvider):
             def fetch():
                 stock = self.yf.Ticker(ticker)
                 # Fetch enough days to account for weekends/holidays
-                hist = stock.history(period=f\"{days + 5}d\")
+                hist = stock.history(period=f"{days + 5}d")
                 
                 if hist.empty:
                     return None
@@ -92,12 +92,12 @@ class YahooFinanceProvider(MarketDataProvider):
                     trading_date = idx.date() if hasattr(idx, 'date') else date.fromisoformat(str(idx).split()[0])
                     
                     bars.append({
-                        \"date\": trading_date,
-                        \"open\": float(row['Open']),
-                        \"high\": float(row['High']),
-                        \"low\": float(row['Low']),
-                        \"close\": float(row['Close']),  # Regular-hours close
-                        \"volume\": int(row['Volume']) if 'Volume' in row else 0
+                        "date": trading_date,
+                        "open": float(row['Open']),
+                        "high": float(row['High']),
+                        "low": float(row['Low']),
+                        "close": float(row['Close']),  # Regular-hours close
+                        "volume": int(row['Volume']) if 'Volume' in row else 0
                     })
                 
                 # Return most recent first (reverse order)
@@ -108,5 +108,6 @@ class YahooFinanceProvider(MarketDataProvider):
             return result
             
         except Exception as e:
-            logger.error(f\"Failed to fetch daily bars for {ticker}: {e}\")
+            logger.error(f"Failed to fetch daily bars for {ticker}: {e}")
             return None
+
