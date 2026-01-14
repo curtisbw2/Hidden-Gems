@@ -760,56 +760,76 @@ class AccessPanelCog(commands.Cog):
             await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
             return
         
-        verify_channel = await self.get_channel(guild, "verify")
-        if not verify_channel:
-            await interaction.followup.send("❌ Verify channel not found.", ephemeral=True)
-            return
-        
-        # Check for existing panel
-        existing_panel_id = await self.db.get_access_panel_message_id(guild.id)
-        
-        embed = discord.Embed(
-            title="💎 Hidden Gems Research – The Gem Vault",
-            description=(
-                "**Welcome! Choose your access level:**\n\n"
-                "**✅ Free Access**\n"
-                "Get Free Member access instantly.\n\n"
-                "**📧 Premium Access (Email)**\n"
-                "Link your Substack email for automatic verification.\n"
-                "If your email is in our paid subscriber list, Premium will be granted immediately.\n\n"
-                "**🖼️ Premium Access (Screenshot)**\n"
-                "Submit proof of your Substack subscription for manual review.\n\n"
-                "**⚠️ Important Disclaimer**\n"
-                "This bot and community do not provide financial advice. "
-                "All trading decisions are your own responsibility. "
-                "The bot only automates server administration tasks."
-            ),
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        view = AccessPanelView(self.bot)
-        
         try:
+            verify_channel = await self.get_channel(guild, "verify")
+            if not verify_channel:
+                await interaction.followup.send("❌ Verify channel not found. Please create a channel named 'verify' or set CHANNEL_VERIFY_ID.", ephemeral=True)
+                return
+            
+            # Check for existing panel (with timeout)
+            existing_panel_id = None
+            try:
+                existing_panel_id = await self.db.get_access_panel_message_id(guild.id)
+            except Exception as e:
+                logger.warning(f"Failed to get existing panel ID: {e}")
+            
+            embed = discord.Embed(
+                title="💎 Hidden Gems Research – The Gem Vault",
+                description=(
+                    "**Welcome! Choose your access level:**\n\n"
+                    "**✅ Free Access**\n"
+                    "Get Free Member access instantly.\n\n"
+                    "**📧 Premium Access (Email)**\n"
+                    "Link your Substack email for automatic verification.\n"
+                    "If your email is in our paid subscriber list, Premium will be granted immediately.\n\n"
+                    "**🖼️ Premium Access (Screenshot)**\n"
+                    "Submit proof of your Substack subscription for manual review.\n\n"
+                    "**⚠️ Important Disclaimer**\n"
+                    "This bot and community do not provide financial advice. "
+                    "All trading decisions are your own responsibility. "
+                    "The bot only automates server administration tasks."
+                ),
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            view = AccessPanelView(self.bot)
+            
             if existing_panel_id:
                 # Try to edit existing message
                 try:
                     existing_message = await verify_channel.fetch_message(existing_panel_id)
                     await existing_message.edit(embed=embed, view=view)
-                    await self.db.update_access_panel_message_id(guild.id, existing_message.id)
+                    try:
+                        await self.db.update_access_panel_message_id(guild.id, existing_message.id)
+                    except Exception as e:
+                        logger.warning(f"Failed to update panel ID in DB: {e}")
                     await interaction.followup.send(f"✅ Access Panel updated in {verify_channel.mention}!", ephemeral=True)
                     return
                 except discord.NotFound:
                     # Message was deleted, create new one
-                    pass
+                    logger.info(f"Existing panel message {existing_panel_id} not found, creating new one")
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ I don't have permission to edit messages in that channel.", ephemeral=True)
+                    return
                 except Exception as e:
                     logger.warning(f"Failed to edit existing panel: {e}")
+                    # Continue to create new one
             
             # Post new panel
-            message = await verify_channel.send(embed=embed, view=view)
-            await self.db.set_access_panel_message_id(guild.id, message.id)
-            await interaction.followup.send(f"✅ Access Panel posted in {verify_channel.mention}!", ephemeral=True)
-            
+            try:
+                message = await verify_channel.send(embed=embed, view=view)
+                try:
+                    await self.db.set_access_panel_message_id(guild.id, message.id)
+                except Exception as e:
+                    logger.warning(f"Failed to save panel ID to DB: {e}")
+                await interaction.followup.send(f"✅ Access Panel posted in {verify_channel.mention}!", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send("❌ I don't have permission to send messages in that channel.", ephemeral=True)
+            except Exception as e:
+                logger.error(f"Error posting access panel: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ Error posting panel: {str(e)}", ephemeral=True)
+                
         except Exception as e:
-            logger.error(f"Error posting access panel: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ Error posting panel: {str(e)}", ephemeral=True)
+            logger.error(f"Unexpected error in post_access_panel: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Unexpected error: {str(e)}", ephemeral=True)
