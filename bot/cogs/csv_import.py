@@ -219,45 +219,47 @@ class CSVImportCog(commands.Cog):
         
         # Get all users with verified emails
         async with self.db.get_connection() as db:
-            async with db.execute(
+            cursor = await db.execute(
                 "SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE"
-            ) as cursor:
-                async for row in cursor:
-                    user_id = row["discord_user_id"]
-                    email_hash = row["email_hash"]
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            for row in rows:
+                user_id = row["discord_user_id"]
+                email_hash = row["email_hash"]
                     
-                    if not email_hash:
+                if not email_hash:
+                    skipped += 1
+                    continue
+                    
+                member = guild.get_member(user_id)
+                if not member:
+                    skipped += 1
+                    continue
+                    
+                has_premium = premium_role in member.roles
+                is_paid = email_hash in paid_set
+                    
+                if is_paid and not has_premium:
+                    # Grant Premium
+                    try:
+                        await member.add_roles(premium_role, reason="Sync: email in paid list")
+                        granted += 1
+                        logger.info(f"Synced: granted premium to {member}")
+                    except Exception as e:
+                        logger.error(f"Failed to grant premium to {member}: {e}")
                         skipped += 1
-                        continue
-                    
-                    member = guild.get_member(user_id)
-                    if not member:
+                elif not is_paid and has_premium and self.config.STRICT_REVOKE:
+                    # Revoke Premium
+                    try:
+                        await member.remove_roles(premium_role, reason="Sync: email not in paid list")
+                        revoked += 1
+                        logger.info(f"Synced: revoked premium from {member}")
+                    except Exception as e:
+                        logger.error(f"Failed to revoke premium from {member}: {e}")
                         skipped += 1
-                        continue
-                    
-                    has_premium = premium_role in member.roles
-                    is_paid = email_hash in paid_set
-                    
-                    if is_paid and not has_premium:
-                        # Grant Premium
-                        try:
-                            await member.add_roles(premium_role, reason="Sync: email in paid list")
-                            granted += 1
-                            logger.info(f"Synced: granted premium to {member}")
-                        except Exception as e:
-                            logger.error(f"Failed to grant premium to {member}: {e}")
-                            skipped += 1
-                    elif not is_paid and has_premium and self.config.STRICT_REVOKE:
-                        # Revoke Premium
-                        try:
-                            await member.remove_roles(premium_role, reason="Sync: email not in paid list")
-                            revoked += 1
-                            logger.info(f"Synced: revoked premium from {member}")
-                        except Exception as e:
-                            logger.error(f"Failed to revoke premium from {member}: {e}")
-                            skipped += 1
-                    else:
-                        skipped += 1
+                else:
+                    skipped += 1
         
         return {"granted": granted, "revoked": revoked, "skipped": skipped}
     
