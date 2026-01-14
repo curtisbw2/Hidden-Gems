@@ -132,14 +132,44 @@ The bot will:
 
 ### Railway (Recommended)
 
-1. Create account at [Railway](https://railway.app/)
-2. Create new project → "Deploy from GitHub repo"
-3. Add environment variables in Railway dashboard
-4. For persistent storage, Railway will persist the `data/` directory
-5. **For production**, consider using Postgres instead of SQLite:
+1. **Push code to GitHub** (if not already done):
+   ```bash
+   git add .
+   git commit -m "Initial commit"
+   git push origin main
+   ```
+
+2. Create account at [Railway](https://railway.app/)
+
+3. Create new project → **"Deploy from GitHub repo"**
+   - Select your repository: `curtisbw2/Hidden-Gems`
+   - Railway will auto-detect Python
+
+4. **Configure the service:**
+   - Railway will auto-detect the start command from `Procfile`
+   - If needed, set start command manually: `cd bot && python main.py`
+
+5. **Add environment variables** in Railway dashboard:
+   - Go to your service → Variables tab
+   - Add all variables from your `.env` file:
+     - `DISCORD_TOKEN`
+     - `GUILD_ID`
+     - `SENDGRID_API_KEY`
+     - `FROM_EMAIL`
+     - (and any other custom settings)
+
+6. **For persistent storage:**
+   - Railway will persist the `data/` directory automatically
+   - SQLite database will be stored in `bot/data/bot.db`
+
+7. **For production**, consider using Postgres instead of SQLite:
    - Add Postgres service in Railway
    - Update `db.py` to use `asyncpg` instead of `aiosqlite`
-   - Update connection string in config
+   - Update connection string in config using `DATABASE_URL` env var
+
+8. **Deploy:**
+   - Railway will automatically deploy on every push to `main`
+   - Check logs in Railway dashboard to verify bot is running
 
 ### Other Platforms
 
