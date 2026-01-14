@@ -162,6 +162,15 @@ class Database:
             )
         """)
         
+        # Substack tracking table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS substack_posts (
+                id BIGSERIAL PRIMARY KEY,
+                guid VARCHAR(255) UNIQUE NOT NULL,
+                posted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        
         # Create indexes
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_hash ON users(email_hash)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_paid_emails_active ON paid_emails(active)")
@@ -253,6 +262,15 @@ class Database:
                 guild_id INTEGER PRIMARY KEY,
                 message_id INTEGER NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Substack tracking table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS substack_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guid TEXT UNIQUE NOT NULL,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         

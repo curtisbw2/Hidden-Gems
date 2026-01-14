@@ -36,10 +36,12 @@ class Config:
     CHANNEL_VERIFY_QUEUE: str = "verify-queue"
     CHANNEL_BOT_LOGS: str = "bot-logs"
     CHANNEL_ALERTS: str = "alerts"
+    CHANNEL_SUBSTACK: str = "substack"  # Channel for Substack post notifications
     CHANNEL_VERIFY_ID: Optional[int] = None
     CHANNEL_VERIFY_QUEUE_ID: Optional[int] = None
     CHANNEL_BOT_LOGS_ID: Optional[int] = None
     CHANNEL_ALERTS_ID: Optional[int] = None
+    CHANNEL_SUBSTACK_ID: Optional[int] = None
     CHANNEL_FALLBACK_DM: Optional[int] = None  # Optional fallback for failed DMs
     
     # Onboarding
@@ -64,6 +66,10 @@ class Config:
     ALERT_CHECK_INTERVAL_MINUTES: Optional[int] = None  # If set, check every N minutes but only alert once per day
     ALERT_THRESHOLD_PERCENT: float = 10.0
     ALERT_TICKERS: str = "RR,ONDS,ACHR,UMAC,AMPX,LPTH"
+    
+    # Substack RSS Monitoring
+    SUBSTACK_RSS_URL: Optional[str] = None  # e.g., "https://yourpublication.substack.com/feed"
+    SUBSTACK_CHECK_INTERVAL_MINUTES: int = 15  # How often to check for new posts
     
     # Database
     DB_PATH: str = "data/bot.db"
@@ -119,10 +125,12 @@ class Config:
             CHANNEL_VERIFY_QUEUE=os.getenv("CHANNEL_VERIFY_QUEUE", "verify-queue"),
             CHANNEL_BOT_LOGS=os.getenv("CHANNEL_BOT_LOGS", "bot-logs"),
             CHANNEL_ALERTS=os.getenv("CHANNEL_ALERTS", "alerts"),
+            CHANNEL_SUBSTACK=os.getenv("CHANNEL_SUBSTACK", "substack"),
             CHANNEL_VERIFY_ID=get_int("CHANNEL_VERIFY_ID"),
             CHANNEL_VERIFY_QUEUE_ID=get_int("CHANNEL_VERIFY_QUEUE_ID"),
             CHANNEL_BOT_LOGS_ID=get_int("CHANNEL_BOT_LOGS_ID"),
             CHANNEL_ALERTS_ID=get_int("CHANNEL_ALERTS_ID"),
+            CHANNEL_SUBSTACK_ID=get_int("CHANNEL_SUBSTACK_ID"),
             CHANNEL_FALLBACK_DM=get_int("CHANNEL_FALLBACK_DM"),
             
             AUTO_ASSIGN_FREE_ON_JOIN=get_bool("AUTO_ASSIGN_FREE_ON_JOIN", True),
@@ -142,6 +150,9 @@ class Config:
             ALERT_CHECK_INTERVAL_MINUTES=get_int("ALERT_CHECK_INTERVAL_MINUTES"),
             ALERT_THRESHOLD_PERCENT=get_float("ALERT_THRESHOLD_PERCENT", 10.0),
             ALERT_TICKERS=os.getenv("ALERT_TICKERS", "RR,ONDS,ACHR,UMAC,AMPX,LPTH"),
+            
+            SUBSTACK_RSS_URL=os.getenv("SUBSTACK_RSS_URL"),
+            SUBSTACK_CHECK_INTERVAL_MINUTES=get_int("SUBSTACK_CHECK_INTERVAL_MINUTES", 15),
             
             DB_PATH=os.getenv("DB_PATH", "data/bot.db"),
             DATABASE_URL=os.getenv("DATABASE_URL"),
@@ -164,6 +175,7 @@ class Config:
             "verify_queue": self.CHANNEL_VERIFY_QUEUE_ID,
             "bot_logs": self.CHANNEL_BOT_LOGS_ID,
             "alerts": self.CHANNEL_ALERTS_ID,
+            "substack": self.CHANNEL_SUBSTACK_ID,
         }
     
     def get_ticker_list(self) -> list[str]:

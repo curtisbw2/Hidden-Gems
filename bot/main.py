@@ -21,6 +21,7 @@ from cogs.csv_import import CSVImportCog
 from cogs.alerts import AlertsCog
 from cogs.status import StatusCog
 from cogs.access_panel import AccessPanelCog
+from cogs.substack import SubstackCog
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class HiddenGemsBot(commands.Bot):
         await self.add_cog(AlertsCog(self))
         await self.add_cog(StatusCog(self))
         await self.add_cog(AccessPanelCog(self))
+        await self.add_cog(SubstackCog(self))
         
         # Register persistent views for Access Panel
         from cogs.access_panel import AccessPanelView
