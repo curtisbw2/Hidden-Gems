@@ -399,232 +399,155 @@ class SubmitScreenshotButton(discord.ui.Button):
     
     async def callback(self, interaction: discord.Interaction):
         """Submit screenshot proof."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            # Already responded, try followup
+            pass
         
-        guild = interaction.guild
-        if not guild:
-            await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
-            return
-        
-        # Enforce channel restriction
-        access_panel_cog = self.bot.get_cog("AccessPanelCog")
-        if access_panel_cog:
-            verify_channel = await access_panel_cog.get_channel(guild, "verify")
-            if verify_channel and interaction.channel_id != verify_channel.id:
+        try:
+            guild = interaction.guild
+            if not guild:
+                await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
+                return
+            
+            bot = interaction.client
+            
+            # Enforce channel restriction
+            access_panel_cog = bot.get_cog("AccessPanelCog")
+            if access_panel_cog:
+                verify_channel = await access_panel_cog.get_channel(guild, "verify")
+                if verify_channel and interaction.channel_id != verify_channel.id:
+                    await interaction.followup.send(
+                        f"❌ This can only be used in {verify_channel.mention}.",
+                        ephemeral=True
+                    )
+                    return
+                if verify_channel:
+                    verify_channel_obj = verify_channel
+                else:
+                    verify_channel_obj = interaction.channel
+            else:
+                verify_channel_obj = interaction.channel
+            
+            if not verify_channel_obj:
+                await interaction.followup.send("❌ Channel not found.", ephemeral=True)
+                return
+            
+            # Check for pending request
+            pending = await bot.db.get_pending_verify_request(interaction.user.id)
+            if pending:
+                await interaction.followup.send("❌ You already have a pending verification request.", ephemeral=True)
+                return
+            
+            # Look for recent messages with attachments
+            timeout_minutes = bot.config.PROOF_TIMEOUT_MINUTES
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+            
+            attachment_urls = []
+            try:
+                async for message in verify_channel_obj.history(limit=20, after=cutoff_time):
+                    if message.author.id == interaction.user.id and message.attachments:
+                        for attachment in message.attachments:
+                            if attachment.content_type and attachment.content_type.startswith("image/"):
+                                attachment_urls.append(attachment.url)
+            except Exception as e:
+                logger.error(f"Error reading channel history: {e}", exc_info=True)
+                await interaction.followup.send("❌ Error reading channel history. Please try again.", ephemeral=True)
+                return
+            
+            if not attachment_urls:
                 await interaction.followup.send(
-                    f"❌ This can only be used in {verify_channel.mention}.",
+                    f"❌ No image attachments found in your recent messages. "
+                    f"Please upload an image in {verify_channel_obj.mention} and try again.",
                     ephemeral=True
                 )
                 return
-            if verify_channel:
-                verify_channel_obj = verify_channel
-            else:
-                verify_channel_obj = interaction.channel
-        else:
-            verify_channel_obj = interaction.channel
-        
-        if not verify_channel_obj:
-            await interaction.followup.send("❌ Channel not found.", ephemeral=True)
-            return
-        
-        # Check for pending request
-        pending = await self.bot.db.get_pending_verify_request(interaction.user.id)
-        if pending:
-            await interaction.followup.send("❌ You already have a pending verification request.", ephemeral=True)
-            return
-        
-        # Look for recent messages with attachments
-        timeout_minutes = self.bot.config.PROOF_TIMEOUT_MINUTES
-        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
-        
-        attachment_urls = []
-        async for message in verify_channel_obj.history(limit=20, after=cutoff_time):
-            if message.author.id == interaction.user.id and message.attachments:
-                for attachment in message.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image/"):
-                        attachment_urls.append(attachment.url)
-        
-        if not attachment_urls:
+            
+            # Get email hash from pending request
+            verification_cog = bot.get_cog("VerificationQueueCog")
+            claimed_email_hash = self.claimed_email_hash
+            if verification_cog:
+                pending_info = verification_cog.pending_requests.pop(interaction.user.id, {})
+                if not claimed_email_hash:
+                    claimed_email_hash = pending_info.get("email_hash")
+            
+            # Create verification request
+            try:
+                request_id = await bot.db.create_verify_request(
+                    interaction.user.id,
+                    claimed_email_hash,
+                    attachment_urls
+                )
+            except Exception as e:
+                logger.error(f"Error creating verify request: {e}", exc_info=True)
+                await interaction.followup.send("❌ Error creating verification request. Please try again.", ephemeral=True)
+                return
+            
+            # Record rate limit
+            if verification_cog:
+                verification_cog.rate_limiter.record_action(interaction.user.id, "verify_premium")
+            
+            # Post to verify queue
+            admin_cog = bot.get_cog("AdminRolesCog")
+            if admin_cog:
+                queue_channel = await admin_cog.get_channel(guild, "verify_queue")
+                if queue_channel:
+                    try:
+                        from cogs.verification_queue import VerifyQueueButtons
+                        
+                        embed = discord.Embed(
+                            title="💎 New Premium Verification Request",
+                            description=f"**User:** {interaction.user.mention} ({interaction.user})\n**User ID:** {interaction.user.id}",
+                            color=discord.Color.blue(),
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        
+                        if claimed_email_hash:
+                            is_paid = await bot.db.is_email_paid(claimed_email_hash)
+                            email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
+                            embed.add_field(name="Email Status", value=email_status, inline=True)
+                        
+                        if attachment_urls:
+                            embed.add_field(
+                                name="Proof Attachments",
+                                value="\n".join([f"[Image {i+1}]({url})" for i, url in enumerate(attachment_urls[:5])]),
+                                inline=False
+                            )
+                        
+                        embed.set_footer(text=f"Request ID: {request_id}")
+                        
+                        view = VerifyQueueButtons(bot, request_id)
+                        await queue_channel.send(embed=embed, view=view)
+                        logger.info(f"Posted verification request {request_id} to verify-queue for user {interaction.user.id}")
+                    except Exception as e:
+                        logger.error(f"Error posting to verify queue: {e}", exc_info=True)
+                        await interaction.followup.send(
+                            "⚠️ Verification request created but failed to post to mod queue. Please contact an admin.",
+                            ephemeral=True
+                        )
+                        return
+                else:
+                    logger.warning("verify_queue channel not found")
+                    await interaction.followup.send(
+                        "⚠️ Verification request created but verify_queue channel not found. Please contact an admin.",
+                        ephemeral=True
+                    )
+                    return
+            
             await interaction.followup.send(
-                f"❌ No image attachments found in your recent messages. "
-                f"Please upload an image in {verify_channel_obj.mention} and try again.",
+                "✅ Your verification request has been submitted! A moderator will review it shortly.",
                 ephemeral=True
             )
-            return
-        
-        # Get email hash from pending request
-        verification_cog = self.bot.get_cog("VerificationQueueCog")
-        claimed_email_hash = self.claimed_email_hash
-        if verification_cog:
-            pending_info = verification_cog.pending_requests.pop(interaction.user.id, {})
-            if not claimed_email_hash:
-                claimed_email_hash = pending_info.get("email_hash")
-        
-        # Create verification request
-        request_id = await self.bot.db.create_verify_request(
-            interaction.user.id,
-            claimed_email_hash,
-            attachment_urls
-        )
-        
-        # Record rate limit
-        if verification_cog:
-            verification_cog.rate_limiter.record_action(interaction.user.id, "verify_premium")
-        
-        # Post to verify queue
-        admin_cog = self.bot.get_cog("AdminRolesCog")
-        if admin_cog:
-            queue_channel = await admin_cog.get_channel(guild, "verify_queue")
-            if queue_channel:
-                from cogs.verification_queue import VerifyQueueButtons
-                
-                embed = discord.Embed(
-                    title="💎 New Premium Verification Request",
-                    description=f"**User:** {interaction.user.mention} ({interaction.user})\n**User ID:** {interaction.user.id}",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                
-                if claimed_email_hash:
-                    is_paid = await self.bot.db.is_email_paid(claimed_email_hash)
-                    email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
-                    embed.add_field(name="Email Status", value=email_status, inline=True)
-                
-                if attachment_urls:
-                    embed.add_field(
-                        name="Proof Attachments",
-                        value="\n".join([f"[Image {i+1}]({url})" for i, url in enumerate(attachment_urls[:5])]),
-                        inline=False
-                    )
-                
-                embed.set_footer(text=f"Request ID: {request_id}")
-                
-                view = VerifyQueueButtons(self.bot, request_id)
-                await queue_channel.send(embed=embed, view=view)
-        
-        await interaction.followup.send(
-            "✅ Your verification request has been submitted! A moderator will review it shortly.",
-            ephemeral=True
-        )
-
-
-class SubmitScreenshotButton(discord.ui.Button):
-    """Submit Screenshot button."""
-    
-    def __init__(self, bot, claimed_email_hash: str = None):
-        super().__init__(label="Submit Screenshot", style=discord.ButtonStyle.primary)
-        self.bot = bot
-        self.claimed_email_hash = claimed_email_hash
-    
-    async def callback(self, interaction: discord.Interaction):
-        """Submit screenshot proof."""
-        await interaction.response.defer(ephemeral=True)
-        
-        guild = interaction.guild
-        if not guild:
-            await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
-            return
-        
-        # Enforce channel restriction
-        access_panel_cog = self.bot.get_cog("AccessPanelCog")
-        if access_panel_cog:
-            verify_channel = await access_panel_cog.get_channel(guild, "verify")
-            if verify_channel and interaction.channel_id != verify_channel.id:
+        except Exception as e:
+            logger.error(f"Error in SubmitScreenshotButton callback: {e}", exc_info=True)
+            try:
                 await interaction.followup.send(
-                    f"❌ This can only be used in {verify_channel.mention}.",
+                    f"❌ An error occurred: {str(e)}. Please try again or contact an admin.",
                     ephemeral=True
                 )
-                return
-            if verify_channel:
-                verify_channel_obj = verify_channel
-            else:
-                verify_channel_obj = interaction.channel
-        else:
-            verify_channel_obj = interaction.channel
-        
-        if not verify_channel_obj:
-            await interaction.followup.send("❌ Channel not found.", ephemeral=True)
-            return
-        
-        # Check for pending request
-        pending = await self.bot.db.get_pending_verify_request(interaction.user.id)
-        if pending:
-            await interaction.followup.send("❌ You already have a pending verification request.", ephemeral=True)
-            return
-        
-        # Look for recent messages with attachments
-        timeout_minutes = self.bot.config.PROOF_TIMEOUT_MINUTES
-        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
-        
-        attachment_urls = []
-        async for message in verify_channel_obj.history(limit=20, after=cutoff_time):
-            if message.author.id == interaction.user.id and message.attachments:
-                for attachment in message.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image/"):
-                        attachment_urls.append(attachment.url)
-        
-        if not attachment_urls:
-            await interaction.followup.send(
-                f"❌ No image attachments found in your recent messages. "
-                f"Please upload an image in {verify_channel_obj.mention} and try again.",
-                ephemeral=True
-            )
-            return
-        
-        # Get email hash from pending request
-        verification_cog = self.bot.get_cog("VerificationQueueCog")
-        claimed_email_hash = self.claimed_email_hash
-        if verification_cog:
-            pending_info = verification_cog.pending_requests.pop(interaction.user.id, {})
-            if not claimed_email_hash:
-                claimed_email_hash = pending_info.get("email_hash")
-        
-        # Create verification request
-        request_id = await self.bot.db.create_verify_request(
-            interaction.user.id,
-            claimed_email_hash,
-            attachment_urls
-        )
-        
-        # Record rate limit
-        if verification_cog:
-            verification_cog.rate_limiter.record_action(interaction.user.id, "verify_premium")
-        
-        # Post to verify queue
-        admin_cog = self.bot.get_cog("AdminRolesCog")
-        if admin_cog:
-            queue_channel = await admin_cog.get_channel(guild, "verify_queue")
-            if queue_channel:
-                from cogs.verification_queue import VerifyQueueButtons
-                
-                embed = discord.Embed(
-                    title="💎 New Premium Verification Request",
-                    description=f"**User:** {interaction.user.mention} ({interaction.user})\n**User ID:** {interaction.user.id}",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                
-                if claimed_email_hash:
-                    is_paid = await self.bot.db.is_email_paid(claimed_email_hash)
-                    email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
-                    embed.add_field(name="Email Status", value=email_status, inline=True)
-                
-                if attachment_urls:
-                    embed.add_field(
-                        name="Proof Attachments",
-                        value="\n".join([f"[Image {i+1}]({url})" for i, url in enumerate(attachment_urls[:5])]),
-                        inline=False
-                    )
-                
-                embed.set_footer(text=f"Request ID: {request_id}")
-                
-                view = VerifyQueueButtons(self.bot, request_id)
-                await queue_channel.send(embed=embed, view=view)
-        
-        await interaction.followup.send(
-            "✅ Your verification request has been submitted! A moderator will review it shortly.",
-            ephemeral=True
-        )
+            except:
+                pass
 
 
 class SubmitScreenshotView(discord.ui.View):
