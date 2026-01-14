@@ -29,7 +29,14 @@ class FreeAccessButton(discord.ui.Button):
             await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
             return
         
-        verify_channel_id = await self.view.get_verify_channel_id(interaction.guild)
+        # Get verify channel ID
+        access_panel_cog = interaction.client.get_cog("AccessPanelCog")
+        verify_channel_id = None
+        if access_panel_cog:
+            verify_channel = await access_panel_cog.get_channel(interaction.guild, "verify")
+            if verify_channel:
+                verify_channel_id = verify_channel.id
+        
         if verify_channel_id and interaction.channel_id != verify_channel_id:
             await interaction.response.send_message(
                 f"❌ This panel can only be used in <#{verify_channel_id}>.",
@@ -40,7 +47,7 @@ class FreeAccessButton(discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         
         # Get free role
-        onboarding_cog = self.view.bot.get_cog("OnboardingCog")
+        onboarding_cog = interaction.client.get_cog("OnboardingCog")
         if not onboarding_cog:
             await interaction.followup.send("❌ Bot configuration error.", ephemeral=True)
             return
@@ -116,15 +123,16 @@ class PremiumEmailModal(discord.ui.Modal, title="Premium Access - Email Verifica
             await interaction.followup.send("❌ This email is already linked to another Discord account.", ephemeral=True)
             return
         
+        bot = interaction.client
         # Generate OTP
         otp_code, otp_hash = generate_otp_code()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=self.view.bot.config.OTP_EXPIRY_MINUTES)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=bot.config.OTP_EXPIRY_MINUTES)
         
         # Store OTP with email hash
-        await self.view.bot.db.store_otp(interaction.user.id, otp_hash, email_hash, expires_at)
+        await bot.db.store_otp(interaction.user.id, otp_hash, email_hash, expires_at)
         
         # Send email
-        email_service = EmailService(self.view.bot.config.SENDGRID_API_KEY, self.view.bot.config.FROM_EMAIL)
+        email_service = EmailService(bot.config.SENDGRID_API_KEY, bot.config.FROM_EMAIL)
         if not email_service.enabled:
             await interaction.followup.send("❌ Email service is not configured.", ephemeral=True)
             return
@@ -136,10 +144,10 @@ class PremiumEmailModal(discord.ui.Modal, title="Premium Access - Email Verifica
             return
         
         # Show "Enter Code" button
-        view = EnterCodeView(self.view.bot, email_hash)
+        view = EnterCodeView(bot, email_hash)
         await interaction.followup.send(
             f"✅ Verification code sent to your email! Click the button below to enter your code.\n\n"
-            f"**Note:** The code expires in {self.view.bot.config.OTP_EXPIRY_MINUTES} minutes.",
+            f"**Note:** The code expires in {bot.config.OTP_EXPIRY_MINUTES} minutes.",
             view=view,
             ephemeral=True
         )
@@ -289,7 +297,14 @@ class PremiumEmailButton(discord.ui.Button):
             await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
             return
         
-        verify_channel_id = await self.view.get_verify_channel_id(interaction.guild)
+        # Get verify channel ID
+        access_panel_cog = interaction.client.get_cog("AccessPanelCog")
+        verify_channel_id = None
+        if access_panel_cog:
+            verify_channel = await access_panel_cog.get_channel(interaction.guild, "verify")
+            if verify_channel:
+                verify_channel_id = verify_channel.id
+        
         if verify_channel_id and interaction.channel_id != verify_channel_id:
             await interaction.response.send_message(
                 f"❌ This panel can only be used in <#{verify_channel_id}>.",
@@ -298,7 +313,8 @@ class PremiumEmailButton(discord.ui.Button):
             return
         
         # Show email modal
-        modal = PremiumEmailModal(self.view)
+        view = AccessPanelView(interaction.client)
+        modal = PremiumEmailModal(view)
         await interaction.response.send_modal(modal)
 
 
@@ -333,7 +349,14 @@ class PremiumScreenshotModal(discord.ui.Modal, title="Premium Access - Screensho
             await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
             return
         
-        verify_channel_id = await self.view.get_verify_channel_id(interaction.guild)
+        # Get verify channel ID
+        access_panel_cog = interaction.client.get_cog("AccessPanelCog")
+        verify_channel_id = None
+        if access_panel_cog:
+            verify_channel = await access_panel_cog.get_channel(interaction.guild, "verify")
+            if verify_channel:
+                verify_channel_id = verify_channel.id
+        
         if verify_channel_id and interaction.channel_id != verify_channel_id:
             await interaction.followup.send(
                 f"❌ This panel can only be used in <#{verify_channel_id}>.",
@@ -341,6 +364,7 @@ class PremiumScreenshotModal(discord.ui.Modal, title="Premium Access - Screensho
             )
             return
         
+        bot = interaction.client
         # Store email hash if provided
         claimed_email_hash = None
         if self.email.value:
@@ -348,7 +372,7 @@ class PremiumScreenshotModal(discord.ui.Modal, title="Premium Access - Screensho
             claimed_email_hash = hash_email(normalized)
         
         # Store pending request info temporarily
-        verification_cog = self.view.bot.get_cog("VerificationQueueCog")
+        verification_cog = bot.get_cog("VerificationQueueCog")
         if verification_cog:
             verification_cog.pending_requests[interaction.user.id] = {
                 "email_hash": claimed_email_hash,
@@ -356,10 +380,10 @@ class PremiumScreenshotModal(discord.ui.Modal, title="Premium Access - Screensho
             }
         
         # Show submit screenshot button
-        view = SubmitScreenshotView(self.view.bot, claimed_email_hash)
+        view = SubmitScreenshotView(bot, claimed_email_hash)
         await interaction.followup.send(
             f"✅ Request received! Please attach your proof image in your next message in this channel "
-            f"within {self.view.bot.config.PROOF_TIMEOUT_MINUTES} minutes, then click the button below.",
+            f"within {bot.config.PROOF_TIMEOUT_MINUTES} minutes, then click the button below.",
             view=view,
             ephemeral=True
         )
@@ -630,7 +654,14 @@ class PremiumScreenshotButton(discord.ui.Button):
             await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
             return
         
-        verify_channel_id = await self.view.get_verify_channel_id(interaction.guild)
+        # Get verify channel ID
+        access_panel_cog = interaction.client.get_cog("AccessPanelCog")
+        verify_channel_id = None
+        if access_panel_cog:
+            verify_channel = await access_panel_cog.get_channel(interaction.guild, "verify")
+            if verify_channel:
+                verify_channel_id = verify_channel.id
+        
         if verify_channel_id and interaction.channel_id != verify_channel_id:
             await interaction.response.send_message(
                 f"❌ This panel can only be used in <#{verify_channel_id}>.",
@@ -639,7 +670,8 @@ class PremiumScreenshotButton(discord.ui.Button):
             return
         
         # Show screenshot modal
-        modal = PremiumScreenshotModal(self.view)
+        view = AccessPanelView(interaction.client)
+        modal = PremiumScreenshotModal(view)
         await interaction.response.send_modal(modal)
 
 
@@ -655,9 +687,9 @@ class AccessPanelView(discord.ui.View):
     
     async def get_verify_channel_id(self, guild: discord.Guild) -> int | None:
         """Get verify channel ID."""
-        onboarding_cog = self.bot.get_cog("OnboardingCog")
-        if onboarding_cog:
-            verify_channel = await onboarding_cog.get_channel(guild, "verify")
+        access_panel_cog = self.bot.get_cog("AccessPanelCog")
+        if access_panel_cog:
+            verify_channel = await access_panel_cog.get_channel(guild, "verify")
             if verify_channel:
                 return verify_channel.id
         return None
