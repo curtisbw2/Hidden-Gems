@@ -376,3 +376,70 @@ class CSVImportCog(commands.Cog):
             f"• Errors: {len(errors)}",
             ephemeral=True
         )
+    
+    @app_commands.command(name="clear_paid_emails", description="Clear all paid emails from database (Admin only)")
+    @app_commands.describe(confirm="Must be true to confirm deletion")
+    async def clear_paid_emails(self, interaction: discord.Interaction, confirm: bool):
+        """Clear all paid emails from database."""
+        if not await self.check_admin_permissions(interaction):
+            await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        # Require explicit confirmation
+        if not confirm:
+            await interaction.followup.send(
+                "⚠️ **Warning:** This will delete ALL paid emails from the database.\n"
+                "Set `confirm=true` to proceed.",
+                ephemeral=True
+            )
+            return
+        
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
+            return
+        
+        try:
+            # Execute DELETE FROM paid_emails
+            deleted_count = 0
+            if self.db.use_postgres:
+                async with self.db.pool.acquire() as conn:
+                    # Get count before deletion
+                    count_row = await conn.fetchrow("SELECT COUNT(*) as count FROM paid_emails")
+                    deleted_count = count_row["count"] if count_row else 0
+                    # Execute deletion
+                    await conn.execute("DELETE FROM paid_emails")
+            else:
+                async with self.db.get_connection() as db:
+                    # Get count before deletion
+                    async with db.execute("SELECT COUNT(*) as count FROM paid_emails") as cursor:
+                        count_row = await cursor.fetchone()
+                        deleted_count = count_row["count"] if count_row else 0
+                    # Execute deletion
+                    await db.execute("DELETE FROM paid_emails")
+            
+            # Log to bot-logs
+            log_channel = await self.get_channel(guild, "bot_logs")
+            if log_channel:
+                embed = discord.Embed(
+                    title="🗑️ Paid Emails Cleared",
+                    description=(
+                        f"**Cleared by:** {interaction.user.mention} ({interaction.user})\n\n"
+                        f"**Rows deleted:** {deleted_count}"
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                await log_channel.send(embed=embed)
+            
+            await interaction.followup.send(
+                f"✅ Cleared all paid emails from database.\n"
+                f"**Rows deleted:** {deleted_count}",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            logger.error(f"Error clearing paid emails: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error clearing paid emails: {str(e)}", ephemeral=True)
