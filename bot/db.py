@@ -486,6 +486,11 @@ class Database:
         attachment_urls: List[str]
     ) -> int:
         """Create a verification request. Returns request ID."""
+        # Ensure user exists first (required by foreign key constraint)
+        user = await self.get_user(discord_user_id)
+        if not user:
+            await self.create_user(discord_user_id)
+        
         attachment_json = json.dumps(attachment_urls)
         if self.use_postgres:
             async with self.pool.acquire() as conn:
