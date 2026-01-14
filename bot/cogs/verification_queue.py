@@ -17,7 +17,7 @@ class VerifyModal(discord.ui.Modal, title="Premium Verification Request"):
     """Modal for verification request."""
     
     email = discord.ui.TextInput(
-        label="Substack Email (Optional)",
+        label="Substack Email (Recommended)",
         placeholder="your.email@example.com",
         required=False,
         max_length=255
@@ -51,12 +51,20 @@ class VerifyModal(discord.ui.Modal, title="Premium Verification Request"):
             "notes": self.notes.value if self.notes.value else None
         }
         
-        # Tell user to submit proof
-        await interaction.followup.send(
-            f"✅ Request received! Please attach your proof image in your next message in this channel "
-            f"within {self.cog.config.PROOF_TIMEOUT_MINUTES} minutes, then run `/submit_proof`.",
-            ephemeral=True
-        )
+        # Check if email is in paid list (for user feedback)
+        message = f"✅ Request received! Please attach your proof image in your next message in this channel "
+        message += f"within {self.cog.config.PROOF_TIMEOUT_MINUTES} minutes, then run `/submit_proof`.\n\n"
+        
+        if claimed_email_hash:
+            is_paid = await self.cog.db.is_email_paid(claimed_email_hash)
+            if is_paid:
+                message += "💡 **Good news!** Your email is in our paid subscriber list. After you submit proof, you'll be auto-approved!"
+            else:
+                message += "ℹ️ Your email wasn't found in our paid subscriber list. A moderator will review your request."
+        else:
+            message += "ℹ️ **Tip:** Providing your email helps us verify faster if you're in our paid subscriber list."
+        
+        await interaction.followup.send(message, ephemeral=True)
 
 
 class VerifyQueueButtons(discord.ui.View):
@@ -305,6 +313,48 @@ class VerificationQueueCog(commands.Cog):
         pending_info = self.pending_requests.pop(interaction.user.id, {})
         claimed_email_hash = pending_info.get("email_hash")
         
+        # Check if email is in paid subscribers list
+        if claimed_email_hash:
+            is_paid = await self.db.is_email_paid(claimed_email_hash)
+            
+            if is_paid:
+                # Auto-grant Premium - email is in paid list!
+                premium_role = await self.get_role(guild, "premium")
+                if premium_role:
+                    member = guild.get_member(interaction.user.id)
+                    if member:
+                        try:
+                            await member.add_roles(premium_role, reason="Auto-approved: email in paid subscriber list")
+                            logger.info(f"Auto-granted premium to {member} via verify_premium (email in paid list)")
+                            
+                            # Log to bot-logs
+                            log_channel = await self.get_channel(guild, "bot_logs")
+                            if log_channel:
+                                embed = discord.Embed(
+                                    title="✅ Premium Auto-Granted",
+                                    description=(
+                                        f"**User:** {member.mention} ({member})\n"
+                                        f"**Method:** `/verify_premium` with email in paid subscriber list\n"
+                                        f"**Email Hash:** {claimed_email_hash[:16]}..."
+                                    ),
+                                    color=discord.Color.green(),
+                                    timestamp=datetime.now(timezone.utc)
+                                )
+                                try:
+                                    await log_channel.send(embed=embed)
+                                except Exception:
+                                    pass
+                            
+                            await interaction.followup.send(
+                                "✅ **Premium access granted!** Your email is in our paid subscriber list, so you've been automatically approved.",
+                                ephemeral=True
+                            )
+                            return
+                        except Exception as e:
+                            logger.error(f"Failed to auto-grant premium: {e}")
+                            # Fall through to mod queue if auto-grant fails
+        
+        # Email not in paid list OR no email provided - go to mod queue
         # Create verification request
         request_id = await self.db.create_verify_request(
             interaction.user.id,
@@ -325,6 +375,12 @@ class VerificationQueueCog(commands.Cog):
                 timestamp=datetime.now(timezone.utc)
             )
             
+            if claimed_email_hash:
+                # Check if email is in paid list (for mod reference)
+                is_paid = await self.db.is_email_paid(claimed_email_hash)
+                email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
+                embed.add_field(name="Email Status", value=email_status, inline=True)
+            
             if attachment_urls:
                 embed.add_field(
                     name="Proof Attachments",
@@ -338,7 +394,9 @@ class VerificationQueueCog(commands.Cog):
             await queue_channel.send(embed=embed, view=view)
         
         await interaction.followup.send(
-            "✅ Your verification request has been submitted! A moderator will review it shortly.",
+            "✅ Your verification request has been submitted! A moderator will review it shortly.\n\n"
+            "**Note:** If your email is in our paid subscriber list, you would have been auto-approved. "
+            "Otherwise, please wait for manual review.",
             ephemeral=True
         )
     
