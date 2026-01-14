@@ -207,6 +207,7 @@ The bot can run on any platform that supports Python:
 - `/grant_free <user>` - Grant Free role
 - `/revoke_free <user>` - Revoke Free role
 - `/whois <user>` - Get user information
+- `/post_access_panel` - Post or update the Access Panel in #verify (Admin only)
 - `/import_paid_csv <file>` - Import paid subscribers from CSV (Admin only)
 - `/sync_premium` - Sync Premium roles with paid email list (Admin only)
 - `/audit_premium` - Remove Premium from users not in paid list (Admin only)
@@ -319,5 +320,3 @@ For issues or questions:
 3. Check `#bot-logs` channel in Discord
 
 ---
-
-**Disclaimer**: This bot and community do not provide financial advice. All trading decisions are your own responsibility. The bot only automates server administration tasks.

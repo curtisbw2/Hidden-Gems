@@ -238,6 +238,24 @@ class Database:
             )
         """)
         
+        # Access panel tracking table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS access_panel (
+                guild_id INTEGER PRIMARY KEY,
+                message_id INTEGER NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Access panel tracking table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS access_panel (
+                guild_id BIGINT PRIMARY KEY,
+                message_id BIGINT NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        
         # Create indexes
         await db.execute("CREATE INDEX IF NOT EXISTS idx_users_email_hash ON users(email_hash)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_paid_emails_active ON paid_emails(active)")
@@ -805,3 +823,45 @@ class Database:
                     if row:
                         return datetime.fromisoformat(row["imported_at"])
                     return None
+    
+    # Access panel operations
+    async def get_access_panel_message_id(self, guild_id: int) -> Optional[int]:
+        """Get access panel message ID for guild."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT message_id FROM access_panel WHERE guild_id = $1",
+                    guild_id
+                )
+                return row['message_id'] if row else None
+        else:
+            async with self.get_connection() as db:
+                async with db.execute(
+                    "SELECT message_id FROM access_panel WHERE guild_id = ?",
+                    (guild_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return row["message_id"] if row else None
+    
+    async def set_access_panel_message_id(self, guild_id: int, message_id: int) -> None:
+        """Set access panel message ID for guild."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO access_panel (guild_id, message_id, updated_at)
+                       VALUES ($1, $2, NOW())
+                       ON CONFLICT (guild_id) 
+                       DO UPDATE SET message_id = $2, updated_at = NOW()""",
+                    guild_id, message_id
+                )
+        else:
+            async with self.get_connection() as db:
+                await db.execute(
+                    """INSERT OR REPLACE INTO access_panel (guild_id, message_id, updated_at)
+                       VALUES (?, ?, CURRENT_TIMESTAMP)""",
+                    (guild_id, message_id)
+                )
+    
+    async def update_access_panel_message_id(self, guild_id: int, message_id: int) -> None:
+        """Update access panel message ID for guild."""
+        await self.set_access_panel_message_id(guild_id, message_id)

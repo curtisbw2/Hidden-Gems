@@ -53,6 +53,12 @@ class HiddenGemsBot(commands.Bot):
         await self.add_cog(CSVImportCog(self))
         await self.add_cog(AlertsCog(self))
         await self.add_cog(StatusCog(self))
+        await self.add_cog(AccessPanelCog(self))
+        
+        # Register persistent views for Access Panel
+        from cogs.access_panel import AccessPanelView
+        self.add_view(AccessPanelView(self))
+        logger.info("Registered persistent Access Panel views")
         
         logger.info("Bot setup complete")
     
