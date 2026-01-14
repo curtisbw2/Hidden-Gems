@@ -284,17 +284,18 @@ class AlertsCog(commands.Cog):
                 )
                 return
             
-            # Run the check
-            await self.check_alerts(force=force)
-            
-            # Provide feedback
+            # Respond immediately, then run check in background
             await interaction.followup.send(
-                f"✅ Alert check completed!\n"
+                f"🔄 Starting alert check...\n"
                 f"• Force mode: {force}\n"
                 f"• Tickers: {len(self.tickers)}\n"
-                f"• Check `#alerts` and `#bot-logs` for results.",
+                f"• This may take a moment. Check `#alerts` and `#bot-logs` for results.",
                 ephemeral=True
             )
+            
+            # Run check in background task to avoid timeout
+            import asyncio
+            asyncio.create_task(self.check_alerts(force=force))
         except Exception as e:
             logger.error(f"Error in alerts_test: {e}", exc_info=True)
             await interaction.followup.send(
