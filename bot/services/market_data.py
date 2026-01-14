@@ -65,3 +65,48 @@ class YahooFinanceProvider(MarketDataProvider):
         except Exception as e:
             logger.error(f"Failed to fetch quote for {ticker}: {e}")
             return None
+    
+    async def get_daily_bars(self, ticker: str, days: int = 10) -> Optional[List[Dict]]:
+        \"\"\"
+        Get daily bars (OHLC) for ticker.
+        Returns list of dicts with keys: 'date', 'open', 'high', 'low', 'close', 'volume'.
+        Dates are trading dates (regular-hours close dates).
+        \"\"\"
+        if not self.yf:
+            return None
+        
+        try:
+            import asyncio
+            
+            def fetch():
+                stock = self.yf.Ticker(ticker)
+                # Fetch enough days to account for weekends/holidays
+                hist = stock.history(period=f\"{days + 5}d\")
+                
+                if hist.empty:
+                    return None
+                
+                bars = []
+                for idx, row in hist.iterrows():
+                    # Convert index (Timestamp) to date
+                    trading_date = idx.date() if hasattr(idx, 'date') else date.fromisoformat(str(idx).split()[0])
+                    
+                    bars.append({
+                        \"date\": trading_date,
+                        \"open\": float(row['Open']),
+                        \"high\": float(row['High']),
+                        \"low\": float(row['Low']),
+                        \"close\": float(row['Close']),  # Regular-hours close
+                        \"volume\": int(row['Volume']) if 'Volume' in row else 0
+                    })
+                
+                # Return most recent first (reverse order)
+                bars.reverse()
+                return bars[:days] if len(bars) > days else bars
+            
+            result = await asyncio.to_thread(fetch)
+            return result
+            
+        except Exception as e:
+            logger.error(f\"Failed to fetch daily bars for {ticker}: {e}\")
+            return None
