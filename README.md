@@ -88,6 +88,13 @@ GUILD_ID=your_guild_id_here
 SENDGRID_API_KEY=your_sendgrid_api_key
 FROM_EMAIL=noreply@yourdomain.com
 
+# Database
+# For local dev (SQLite):
+DB_PATH=data/bot.db
+# For production (Postgres on Railway):
+# DATABASE_URL is automatically set when you add Postgres service
+# DATABASE_URL=postgresql://user:password@host:port/database
+
 # Optional: Override defaults
 ROLE_FREE=Free Member
 ROLE_PREMIUM=Premium Member
@@ -158,14 +165,15 @@ The bot will:
      - `FROM_EMAIL`
      - (and any other custom settings)
 
-6. **For persistent storage:**
-   - Railway will persist the `data/` directory automatically
-   - SQLite database will be stored in `bot/data/bot.db`
+6. **Add Postgres database (Recommended for production):**
+   - In Railway dashboard, click "New" → "Database" → "Add Postgres"
+   - Railway will automatically create a `DATABASE_URL` environment variable
+   - The bot will automatically use Postgres if `DATABASE_URL` is set
+   - **Note**: If `DATABASE_URL` is not set, the bot will fall back to SQLite (for local dev)
 
-7. **For production**, consider using Postgres instead of SQLite:
-   - Add Postgres service in Railway
-   - Update `db.py` to use `asyncpg` instead of `aiosqlite`
-   - Update connection string in config using `DATABASE_URL` env var
+7. **For persistent storage (SQLite fallback):**
+   - If not using Postgres, Railway will persist the `data/` directory automatically
+   - SQLite database will be stored in `bot/data/bot.db`
 
 8. **Deploy:**
    - Railway will automatically deploy on every push to `main`

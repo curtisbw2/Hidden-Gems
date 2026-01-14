@@ -67,6 +67,7 @@ class Config:
     
     # Database
     DB_PATH: str = "data/bot.db"
+    DATABASE_URL: Optional[str] = None  # Postgres connection string (takes precedence over DB_PATH)
     
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -143,6 +144,7 @@ class Config:
             ALERT_TICKERS=os.getenv("ALERT_TICKERS", "RR,ONDS,ACHR,UMAC,AMPX,LPTH"),
             
             DB_PATH=os.getenv("DB_PATH", "data/bot.db"),
+            DATABASE_URL=os.getenv("DATABASE_URL"),
             LOG_LEVEL=os.getenv("LOG_LEVEL", "INFO"),
         )
     

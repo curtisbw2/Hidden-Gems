@@ -112,8 +112,22 @@ async def main():
         logger.info("Starting Hidden Gems bot...")
         
         # Initialize database
-        logger.info(f"Initializing database at {config.DB_PATH}")
-        db = Database(config.DB_PATH)
+        if config.DATABASE_URL:
+            logger.info("Initializing Postgres database")
+            db = Database(database_url=config.DATABASE_URL)
+        else:
+            logger.info(f"Initializing SQLite database at {config.DB_PATH}")
+            db = Database(db_path=config.DB_PATH)
+        
+        # Test database connection
+        try:
+            await db.init()
+            logger.info("Database connection successful")
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            if config.DATABASE_URL:
+                logger.error("Check that DATABASE_URL is correct and Postgres service is running")
+            raise
         
         # Create and run bot
         bot = HiddenGemsBot(config, db)
@@ -129,6 +143,8 @@ async def main():
     finally:
         if 'bot' in locals():
             await bot.close()
+        if 'db' in locals():
+            await db.close()
 
 
 if __name__ == "__main__":
