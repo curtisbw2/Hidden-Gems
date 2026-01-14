@@ -41,6 +41,7 @@ A production-ready Discord bot for managing an options trading community, featur
      - Read Message History
      - Attach Files
      - Embed Links
+     - Manage Messages (optional, for deleting proof messages after approval)
    - Copy the generated invite URL
 
 **⚠️ Note**: If you see "PrivilegedIntentsRequired" error, you MUST enable the intents in the Developer Portal. The bot cannot function without these intents.
