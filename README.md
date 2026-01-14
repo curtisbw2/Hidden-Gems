@@ -10,7 +10,7 @@ A production-ready Discord bot for managing an options trading community, featur
   - **Mod Queue**: Submit proof via `/verify_premium` for manual review
   - **Email Linking**: Link Substack email via `/link_email` + `/confirm_code` (no screenshot required)
 - **CSV Import**: Import paid subscribers from Substack exports, automatic role sync
-- **Price Alerts**: Daily monitoring of ticker price changes (±10% threshold)
+- **Price Alerts**: RTH (Regular Trading Hours) close-to-close daily move monitoring (±10% threshold)
 - **Privacy-First**: Emails are hashed (SHA-256), no raw images stored
 
 ## Requirements
@@ -199,7 +199,13 @@ The bot can run on any platform that supports Python:
 - `/submit_proof` - Submit proof attachment after `/verify_premium`
 - `/link_email <email>` - Link Substack email (sends OTP)
 - `/confirm_code <code> <email>` - Confirm email with OTP code
-- `/status` - View bot status
+- `/status` - View bot status and statistics
+- `/alerts_test [force:boolean]` - Manually test alerts for all tickers (Admin only)
+  - `force=false`: Respects once-per-day rule
+  - `force=true`: Bypasses date check and posts if threshold met
+- `/alerts_debug ticker:<str>` - Debug alert calculation for a ticker (Admin only)
+  - Shows last 10 days of close prices and calculation details
+  - Does NOT post to #alerts channel
 
 ### Mod/Admin Commands
 
@@ -212,6 +218,8 @@ The bot can run on any platform that supports Python:
 - `/import_paid_csv <file>` - Import paid subscribers from CSV (Admin only)
 - `/sync_premium` - Sync Premium roles with paid email list (Admin only)
 - `/audit_premium` - Remove Premium from users not in paid list (Admin only)
+- `/alerts_test [force:boolean]` - Manually test alerts for all tickers (Admin only)
+- `/alerts_debug ticker:<str>` - Debug alert calculation for a ticker (Admin only)
 
 ## CSV Import Format
 
@@ -237,9 +245,11 @@ All configuration is done via environment variables. See `.env.example` for all 
 **Key Settings:**
 - `AUTO_ASSIGN_FREE_ON_JOIN` - Auto-assign free role on join (default: true)
 - `STRICT_REVOKE` - Revoke Premium if not in paid list (default: false)
-- `ALERT_TIME` - Scheduled alert time (default: 21:45 ET)
-- `ALERT_THRESHOLD_PERCENT` - Alert threshold (default: 10.0%)
-- `ALERT_TICKERS` - Comma-separated ticker list
+- `ALERT_TIME` - Scheduled alert time (default: 16:10 ET, after market close)
+- `ALERT_TIMEZONE` - Timezone for alert schedule (default: America/New_York)
+- `ALERT_THRESHOLD_PERCENT` - Alert threshold in absolute percent (default: 10.0%)
+- `ALERT_TICKERS` - Comma-separated ticker list (default: RR,ONDS,ACHR,UMAC,AMPX,LPTH)
+- `ALERT_CHECK_INTERVAL_MINUTES` - Optional: check every N minutes instead of scheduled time
 
 ## Security & Privacy
 

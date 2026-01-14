@@ -61,7 +61,7 @@ class Config:
     STRICT_REVOKE: bool = False  # If True, revoke Premium if not in paid list
     
     # Alerts
-    ALERT_TIME: str = "21:45"  # HH:MM format
+    ALERT_TIME: str = "16:10"  # HH:MM format (default: 4:10 PM ET after market close)
     ALERT_TIMEZONE: str = "America/New_York"
     ALERT_CHECK_INTERVAL_MINUTES: Optional[int] = None  # If set, check every N minutes but only alert once per day
     ALERT_THRESHOLD_PERCENT: float = 10.0
@@ -145,7 +145,7 @@ class Config:
             
             STRICT_REVOKE=get_bool("STRICT_REVOKE", False),
             
-            ALERT_TIME=os.getenv("ALERT_TIME", "21:45"),
+            ALERT_TIME=os.getenv("ALERT_TIME", "16:10"),
             ALERT_TIMEZONE=os.getenv("ALERT_TIMEZONE", "America/New_York"),
             ALERT_CHECK_INTERVAL_MINUTES=get_int("ALERT_CHECK_INTERVAL_MINUTES"),
             ALERT_THRESHOLD_PERCENT=get_float("ALERT_THRESHOLD_PERCENT", 10.0),
