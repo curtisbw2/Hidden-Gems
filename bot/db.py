@@ -302,6 +302,7 @@ class Database:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_otp_expires ON otp_codes(expires_at)")
     
     @asynccontextmanager
+    @asynccontextmanager
     async def get_connection(self):
         """Get database connection context manager."""
         if self.use_postgres:
