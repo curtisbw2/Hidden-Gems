@@ -204,65 +204,65 @@ class CSVImportCog(commands.Cog):
         """Sync Premium roles based on paid emails. Returns stats."""
         if not guild:
             return {"granted": 0, "revoked": 0, "skipped": 0}
-        
+
         premium_role = await self.get_role(guild, "premium")
         if not premium_role:
             logger.warning("Premium role not found")
             return {"granted": 0, "revoked": 0, "skipped": 0}
-        
+
         paid_emails = await self.db.get_all_paid_emails()
         paid_set = set(paid_emails)
-        
+
         granted = 0
         revoked = 0
         skipped = 0
-        
+
+        async def handle_user(user_id, email_hash):
+            nonlocal granted, revoked, skipped
+            if not email_hash:
+                skipped += 1
+                return
+            member = guild.get_member(user_id)
+            if not member:
+                skipped += 1
+                return
+            has_premium = premium_role in member.roles
+            is_paid = email_hash in paid_set
+            if is_paid and not has_premium:
+                try:
+                    await member.add_roles(premium_role, reason="Sync: email in paid list")
+                    granted += 1
+                    logger.info(f"Synced: granted premium to {member}")
+                except Exception as e:
+                    logger.error(f"Failed to grant premium to {member}: {e}")
+                    skipped += 1
+            elif not is_paid and has_premium and self.config.STRICT_REVOKE:
+                try:
+                    await member.remove_roles(premium_role, reason="Sync: email not in paid list")
+                    revoked += 1
+                    logger.info(f"Synced: revoked premium from {member}")
+                except Exception as e:
+                    logger.error(f"Failed to revoke premium from {member}: {e}")
+                    skipped += 1
+            else:
+                skipped += 1
+
         # Get all users with verified emails
-        async with self.db.get_connection() as db:
-            cursor = await db.execute(
-                "SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE"
-            )
-            rows = await cursor.fetchall()
-            await cursor.close()
-            for row in rows:
-                user_id = row["discord_user_id"]
-                email_hash = row["email_hash"]
-                    
-                if not email_hash:
-                    skipped += 1
-                    continue
-                    
-                member = guild.get_member(user_id)
-                if not member:
-                    skipped += 1
-                    continue
-                    
-                has_premium = premium_role in member.roles
-                is_paid = email_hash in paid_set
-                    
-                if is_paid and not has_premium:
-                    # Grant Premium
-                    try:
-                        await member.add_roles(premium_role, reason="Sync: email in paid list")
-                        granted += 1
-                        logger.info(f"Synced: granted premium to {member}")
-                    except Exception as e:
-                        logger.error(f"Failed to grant premium to {member}: {e}")
-                        skipped += 1
-                elif not is_paid and has_premium and self.config.STRICT_REVOKE:
-                    # Revoke Premium
-                    try:
-                        await member.remove_roles(premium_role, reason="Sync: email not in paid list")
-                        revoked += 1
-                        logger.info(f"Synced: revoked premium from {member}")
-                    except Exception as e:
-                        logger.error(f"Failed to revoke premium from {member}: {e}")
-                        skipped += 1
-                else:
-                    skipped += 1
-        
+        if self.db.use_postgres:
+            async with self.db.pool.acquire() as conn:
+                rows = await conn.fetch("SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE")
+                for row in rows:
+                    await handle_user(row["discord_user_id"], row["email_hash"])
+        else:
+            async with self.db.get_connection() as db:
+                cursor = await db.execute("SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE")
+                rows = await cursor.fetchall()
+                await cursor.close()
+                for row in rows:
+                    await handle_user(row["discord_user_id"], row["email_hash"])
+
         return {"granted": granted, "revoked": revoked, "skipped": skipped}
-    
+
     @app_commands.command(name="sync_premium", description="Sync Premium roles with paid email list (Admin only)")
     async def sync_premium(self, interaction: discord.Interaction):
         """Sync Premium roles."""
