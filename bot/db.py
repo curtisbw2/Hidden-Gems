@@ -6,7 +6,7 @@ import asyncpg
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as dt_date
 from contextlib import asynccontextmanager
 import json
 
@@ -435,6 +435,12 @@ class Database:
             return dict(row)
         else:
             return dict(row)
+
+    def _pg_trading_date(self, trading_date: Union[str, dt_date]) -> dt_date:
+        """Normalize trading_date for Postgres DATE columns."""
+        if isinstance(trading_date, dt_date):
+            return trading_date
+        return dt_date.fromisoformat(str(trading_date))
     
     # User operations
     async def get_user(self, discord_user_id: int) -> Optional[Dict[str, Any]]:
@@ -1023,7 +1029,7 @@ class Database:
                 row = await conn.fetchrow(
                     "SELECT * FROM intraday_state WHERE ticker = $1 AND trading_date = $2",
                     ticker,
-                    trading_date,
+                    self._pg_trading_date(trading_date),
                 )
                 return dict(row) if row else None
         else:
@@ -1080,7 +1086,7 @@ class Database:
                         updated_at = $8
                     """,
                     ticker,
-                    trading_date,
+                    self._pg_trading_date(trading_date),
                     open_price,
                     last_price,
                     last_pct,
@@ -1115,13 +1121,13 @@ class Database:
                 if ticker:
                     res = await conn.execute(
                         "DELETE FROM intraday_state WHERE trading_date = $1 AND ticker = $2",
-                        trading_date,
+                        self._pg_trading_date(trading_date),
                         ticker,
                     )
                 else:
                     res = await conn.execute(
                         "DELETE FROM intraday_state WHERE trading_date = $1",
-                        trading_date,
+                        self._pg_trading_date(trading_date),
                     )
                 # asyncpg returns like "DELETE <n>"
                 try:
@@ -1169,7 +1175,7 @@ class Database:
                     VALUES ($1, $2, $3, $4, $5, $6)
                     """,
                     ticker,
-                    trading_date,
+                    self._pg_trading_date(trading_date),
                     zone,
                     pct,
                     price,
