@@ -11,6 +11,63 @@ from services.email_service import EmailService
 
 logger = logging.getLogger(__name__)
 
+def _redact_hash(h: str | None) -> str:
+    if not h:
+        return "None"
+    if len(h) <= 12:
+        return h
+    return f"{h[:8]}…{h[-6:]}"
+
+def _as_utc_datetime(value) -> datetime | None:
+    """Parse DB timestamps from either datetime or isoformat strings."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
+
+async def _log_to_bot_logs(bot, guild: discord.Guild, title: str, description: str, color: discord.Color) -> None:
+    """Best-effort log to #bot-logs for Access Panel flows."""
+    try:
+        access_panel_cog = bot.get_cog("AccessPanelCog")
+        if not access_panel_cog:
+            return
+        log_channel = await access_panel_cog.get_channel(guild, "bot_logs")
+        if not log_channel:
+            return
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        await log_channel.send(embed=embed)
+    except Exception:
+        pass
+
+async def _safe_ephemeral_send(interaction: discord.Interaction, content: str) -> None:
+    """Send ephemeral; if forbidden, DM user instead."""
+    try:
+        await interaction.followup.send(content, ephemeral=True)
+        return
+    except discord.Forbidden:
+        try:
+            await interaction.user.send(content)
+        except Exception:
+            pass
+    except Exception:
+        # If followup fails for any reason, last resort DM
+        try:
+            await interaction.user.send(content)
+        except Exception:
+            pass
+
 def _attachment_is_image(attachment: discord.Attachment) -> bool:
     """Return True if the attachment is an image (best-effort)."""
     try:
@@ -278,63 +335,122 @@ class PremiumEmailModal(discord.ui.Modal, title="Premium Access - Email Verifica
     async def on_submit(self, interaction: discord.Interaction):
         """Handle email submission."""
         await interaction.response.defer(ephemeral=True)
-        
-        # Enforce channel restriction
-        if not interaction.guild:
-            await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
-            return
-        
-        verify_channel_id = await self.view.get_verify_channel_id(interaction.guild)
-        if verify_channel_id and interaction.channel_id != verify_channel_id:
-            await interaction.followup.send(
-                f"❌ This panel can only be used in <#{verify_channel_id}>.",
-                ephemeral=True
-            )
-            return
-        
-        email_linking_cog = self.view.bot.get_cog("EmailLinkingCog")
-        if not email_linking_cog:
-            await interaction.followup.send("❌ Email service not available.", ephemeral=True)
-            return
-        
-        # Normalize and hash email
-        normalized = normalize_email(self.email.value)
-        email_hash = hash_email(normalized)
-        
-        # Check if email is already linked to another user
-        existing_user = await self.view.bot.db.get_user_by_email_hash(email_hash)
-        if existing_user and existing_user["discord_user_id"] != interaction.user.id:
-            await interaction.followup.send("❌ This email is already linked to another Discord account.", ephemeral=True)
-            return
-        
         bot = interaction.client
-        # Generate OTP
-        otp_code, otp_hash = generate_otp_code()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=bot.config.OTP_EXPIRY_MINUTES)
-        
-        # Store OTP with email hash
-        await bot.db.store_otp(interaction.user.id, otp_hash, email_hash, expires_at)
-        
-        # Send email
-        email_service = EmailService(bot.config.SENDGRID_API_KEY, bot.config.FROM_EMAIL)
-        if not email_service.enabled:
-            await interaction.followup.send("❌ Email service is not configured.", ephemeral=True)
-            return
-        
-        email_sent = await email_service.send_otp(normalized, otp_code)
-        
-        if not email_sent:
-            await interaction.followup.send("❌ Failed to send verification email. Please try again later.", ephemeral=True)
-            return
-        
-        # Show "Enter Code" button
-        view = EnterCodeView(bot, email_hash)
-        await interaction.followup.send(
-            f"✅ Verification code sent to your email! Click the button below to enter your code.\n\n"
-            f"**Note:** The code expires in {bot.config.OTP_EXPIRY_MINUTES} minutes.",
-            view=view,
-            ephemeral=True
-        )
+        guild = interaction.guild
+
+        try:
+            # Enforce channel restriction
+            if not guild:
+                await _safe_ephemeral_send(interaction, "❌ This can only be used in a server.")
+                return
+
+            verify_channel_id = await self.view.get_verify_channel_id(guild)
+            if verify_channel_id and interaction.channel_id != verify_channel_id:
+                await _safe_ephemeral_send(interaction, f"❌ This panel can only be used in <#{verify_channel_id}>.")
+                return
+
+            # Normalize and hash email
+            normalized = normalize_email(self.email.value)
+            email_hash = hash_email(normalized)
+
+            await _log_to_bot_logs(
+                bot,
+                guild,
+                title="📩 Access Panel: OTP Link Requested",
+                description=(
+                    f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Email Hash:** `{_redact_hash(email_hash)}`"
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            # Check if email is already linked to another user
+            existing_user = await bot.db.get_user_by_email_hash(email_hash)
+            if existing_user and existing_user["discord_user_id"] != interaction.user.id:
+                await _log_to_bot_logs(
+                    bot,
+                    guild,
+                    title="❌ Access Panel: OTP Link Blocked",
+                    description=(
+                        f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                        f"**Email Hash:** `{_redact_hash(email_hash)}`\n"
+                        f"**Reason:** Email already linked to `{existing_user['discord_user_id']}`"
+                    ),
+                    color=discord.Color.red(),
+                )
+                await _safe_ephemeral_send(interaction, "❌ This email is already linked to another Discord account.")
+                return
+
+            # Generate OTP
+            otp_code, otp_hash = generate_otp_code()
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=bot.config.OTP_EXPIRY_MINUTES)
+
+            # Store OTP with email hash
+            await bot.db.delete_otps_for_user_email(interaction.user.id, email_hash)
+            await bot.db.store_otp(interaction.user.id, otp_hash, email_hash, expires_at)
+
+            # Send email
+            email_service = EmailService(bot.config.SENDGRID_API_KEY, bot.config.FROM_EMAIL)
+            if not email_service.enabled:
+                await _log_to_bot_logs(
+                    bot,
+                    guild,
+                    title="❌ Access Panel: Email Service Not Configured",
+                    description=f"**User:** {interaction.user.mention} (`{interaction.user.id}`)",
+                    color=discord.Color.red(),
+                )
+                await _safe_ephemeral_send(interaction, "❌ Email service is not configured. Please contact an administrator.")
+                return
+
+            email_sent = await email_service.send_otp(normalized, otp_code)
+            if not email_sent:
+                await _log_to_bot_logs(
+                    bot,
+                    guild,
+                    title="❌ Access Panel: OTP Email Failed",
+                    description=(
+                        f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                        f"**Email Hash:** `{_redact_hash(email_hash)}`"
+                    ),
+                    color=discord.Color.red(),
+                )
+                await _safe_ephemeral_send(interaction, "❌ Failed to send verification email. Please try again later.")
+                return
+
+            await _log_to_bot_logs(
+                bot,
+                guild,
+                title="✅ Access Panel: OTP Email Sent",
+                description=(
+                    f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Email Hash:** `{_redact_hash(email_hash)}`\n"
+                    f"**Expires At:** `{expires_at.isoformat()}`"
+                ),
+                color=discord.Color.green(),
+            )
+
+            # Show "Enter Code" button
+            view = EnterCodeView(bot, email_hash)
+            await interaction.followup.send(
+                "✅ Verification code sent to your email! Click the button below to enter your code.\n\n"
+                f"**Note:** The code expires in {bot.config.OTP_EXPIRY_MINUTES} minutes.",
+                view=view,
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.error(f"Error in Access Panel PremiumEmailModal: {e}", exc_info=True)
+            if guild:
+                await _log_to_bot_logs(
+                    bot,
+                    guild,
+                    title="❌ Access Panel: OTP Link Error",
+                    description=f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n**Error:** `{type(e).__name__}: {e}`",
+                    color=discord.Color.red(),
+                )
+            await _safe_ephemeral_send(
+                interaction,
+                "❌ An unexpected error occurred while sending your code. Please try again or contact an administrator.",
+            )
 
 
 class EnterCodeModal(discord.ui.Modal, title="Enter Verification Code"):
@@ -356,97 +472,180 @@ class EnterCodeModal(discord.ui.Modal, title="Enter Verification Code"):
     async def on_submit(self, interaction: discord.Interaction):
         """Handle code submission."""
         await interaction.response.defer(ephemeral=True)
-        
-        # Validate code format
-        code = self.code.value.strip()
-        if not code.isdigit() or len(code) != 6:
-            await interaction.followup.send("❌ Invalid code format. Please enter a 6-digit number.", ephemeral=True)
-            return
-        
-        # Hash code
-        code_hash = hash_otp_code(code)
-        
-        # Get OTP record
-        otp_record = await self.bot.db.get_otp(interaction.user.id, code_hash)
-        if not otp_record:
+
+        bot = interaction.client
+        guild = interaction.guild
+
+        try:
+            if not guild:
+                await _safe_ephemeral_send(interaction, "❌ This can only be used in a server.")
+                return
+
+            await _log_to_bot_logs(
+                bot,
+                guild,
+                title="🔐 Access Panel: OTP Confirm Requested",
+                description=(
+                    f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Email Hash:** `{_redact_hash(self.email_hash)}`"
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            code = self.code.value.strip()
+            if not code.isdigit() or len(code) != 6:
+                await _safe_ephemeral_send(interaction, "❌ Invalid code format. Please enter a 6-digit number.")
+                return
+
             otp_record = await self.bot.db.get_otp_by_email_hash(interaction.user.id, self.email_hash)
             if not otp_record:
-                await self.bot.db.increment_otp_attempts(interaction.user.id, code_hash)
-                await interaction.followup.send("❌ Invalid or expired code. Please request a new code.", ephemeral=True)
+                await _log_to_bot_logs(
+                    bot,
+                    guild,
+                    title="❌ Access Panel: OTP Confirm Failed",
+                    description=(
+                        f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                        f"**Email Hash:** `{_redact_hash(self.email_hash)}`\n"
+                        f"**Stage:** Load OTP\n"
+                        f"**Result:** No unexpired OTP found"
+                    ),
+                    color=discord.Color.red(),
+                )
+                await _safe_ephemeral_send(
+                    interaction,
+                    "❌ No active code found. Please click **Premium Access (Email)** again to request a new code.",
+                )
                 return
-        
-        # Verify email_hash matches
-        if otp_record.get("email_hash") != self.email_hash:
-            await self.bot.db.increment_otp_attempts(interaction.user.id, code_hash)
-            await interaction.followup.send("❌ Email address doesn't match the code.", ephemeral=True)
-            return
-        
-        # Check attempts
-        if otp_record["attempts"] >= self.bot.config.OTP_MAX_ATTEMPTS:
-            await interaction.followup.send("❌ Too many failed attempts. Please request a new code.", ephemeral=True)
-            await self.bot.db.delete_otp(interaction.user.id)
-            return
-        
-        # Check expiry
-        expires_at = datetime.fromisoformat(otp_record["expires_at"])
-        if datetime.now(timezone.utc) > expires_at:
-            await interaction.followup.send("❌ Code has expired. Please request a new code.", ephemeral=True)
-            await self.bot.db.delete_otp(interaction.user.id)
-            return
-        
-        # Code is valid! Link email
-        await self.bot.db.create_user(interaction.user.id)
-        await self.bot.db.link_email(interaction.user.id, self.email_hash)
-        await self.bot.db.delete_otp(interaction.user.id)
-        
-        # Check if email is in paid list
-        is_paid = await self.bot.db.is_email_paid(self.email_hash)
-        
-        guild = interaction.guild
-        if guild and is_paid:
-            # Auto-grant Premium
+
+            stored_code_hash = otp_record.get("code_hash")
+            attempts = int(otp_record.get("attempts") or 0)
+            expires_at = _as_utc_datetime(otp_record.get("expires_at"))
+
+            await _log_to_bot_logs(
+                bot,
+                guild,
+                title="📦 Access Panel: OTP Loaded",
+                description=(
+                    f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Email Hash:** `{_redact_hash(self.email_hash)}`\n"
+                    f"**Stored Code Hash:** `{_redact_hash(stored_code_hash)}`\n"
+                    f"**Attempts:** `{attempts}`\n"
+                    f"**Expires At:** `{expires_at.isoformat() if expires_at else 'Unknown'}`"
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            now = datetime.now(timezone.utc)
+            if not expires_at or now > expires_at:
+                await self.bot.db.delete_otps_for_user_email(interaction.user.id, self.email_hash)
+                await _safe_ephemeral_send(interaction, "❌ Code has expired. Please request a new code.")
+                return
+
+            if attempts >= self.bot.config.OTP_MAX_ATTEMPTS:
+                await self.bot.db.delete_otps_for_user_email(interaction.user.id, self.email_hash)
+                await _safe_ephemeral_send(
+                    interaction,
+                    "❌ Too many failed attempts. Please request a new code by clicking **Premium Access (Email)** again.",
+                )
+                return
+
+            input_code_hash = hash_otp_code(code)
+            if not stored_code_hash or input_code_hash != stored_code_hash:
+                if stored_code_hash:
+                    await self.bot.db.increment_otp_attempts(interaction.user.id, stored_code_hash)
+                    refreshed = await self.bot.db.get_otp(interaction.user.id, stored_code_hash)
+                    new_attempts = int((refreshed or {}).get("attempts") or (attempts + 1))
+                else:
+                    new_attempts = attempts + 1
+
+                remaining = max(self.bot.config.OTP_MAX_ATTEMPTS - new_attempts, 0)
+                if new_attempts >= self.bot.config.OTP_MAX_ATTEMPTS:
+                    await self.bot.db.delete_otps_for_user_email(interaction.user.id, self.email_hash)
+                    await _safe_ephemeral_send(
+                        interaction,
+                        "❌ Incorrect code. You’ve reached the maximum attempts. Please request a new code.",
+                    )
+                    return
+
+                await _safe_ephemeral_send(
+                    interaction,
+                    f"❌ Incorrect code. Please try again. **Attempts remaining:** {remaining}",
+                )
+                return
+
+            # Valid -> verify user and clear OTP
+            await self.bot.db.create_user(interaction.user.id)
+            await self.bot.db.link_email(interaction.user.id, self.email_hash)
+            await self.bot.db.delete_otps_for_user_email(interaction.user.id, self.email_hash)
+
+            is_paid = await self.bot.db.is_email_paid(self.email_hash)
+            if not is_paid:
+                await _safe_ephemeral_send(
+                    interaction,
+                    "✅ Email verified ✅ Premium will be granted after next subscriber sync",
+                )
+                return
+
+            # Paid -> attempt to grant Premium role
             onboarding_cog = self.bot.get_cog("OnboardingCog")
-            if onboarding_cog:
-                premium_role = await onboarding_cog.get_role(guild, "premium")
-                if premium_role:
-                    member = guild.get_member(interaction.user.id)
-                    if member:
-                        try:
-                            await member.add_roles(premium_role, reason="Email verified, email in paid subscriber list")
-                            logger.info(f"Auto-granted premium to {member} via access panel email")
-                            
-                            # Log to bot-logs
-                            admin_cog = self.bot.get_cog("AdminRolesCog")
-                            if admin_cog:
-                                log_channel = await admin_cog.get_channel(guild, "bot_logs")
-                                if log_channel:
-                                    embed = discord.Embed(
-                                        title="✅ Premium Auto-Granted",
-                                        description=(
-                                            f"**User:** {member.mention} ({member})\n"
-                                            f"**Method:** Access Panel - Email Verification\n"
-                                            f"**Reason:** Email verified, email in paid subscriber list"
-                                        ),
-                                        color=discord.Color.green(),
-                                        timestamp=datetime.now(timezone.utc)
-                                    )
-                                    try:
-                                        await log_channel.send(embed=embed)
-                                    except Exception:
-                                        pass
-                            
-                            await interaction.followup.send(
-                                "✅ **Premium access granted!** Your email is in our paid subscriber list, so you've been automatically approved.",
-                                ephemeral=True
-                            )
-                            return
-                        except Exception as e:
-                            logger.error(f"Failed to auto-grant premium: {e}")
-        
-        await interaction.followup.send(
-            "✅ Email verified and linked! If your email is in our paid subscriber list, Premium access will be granted automatically after the next import.",
-            ephemeral=True
-        )
+            if not onboarding_cog:
+                await _safe_ephemeral_send(
+                    interaction,
+                    "✅ Email verified.\n\n⚠️ Your email is paid, but role assignment is unavailable right now. Please contact an administrator.",
+                )
+                return
+
+            premium_role = await onboarding_cog.get_role(guild, "premium")
+            if not premium_role:
+                await _safe_ephemeral_send(
+                    interaction,
+                    "✅ Email verified.\n\n⚠️ Premium role not found. Please contact an administrator.",
+                )
+                return
+
+            member = guild.get_member(interaction.user.id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(interaction.user.id)
+                except Exception:
+                    member = None
+
+            if not member:
+                await _safe_ephemeral_send(
+                    interaction,
+                    "✅ Email verified.\n\n⚠️ Could not find your member record to grant Premium. Please contact an administrator.",
+                )
+                return
+
+            try:
+                if premium_role not in member.roles:
+                    await member.add_roles(premium_role, reason="Access Panel: email verified; paid subscriber")
+                await _safe_ephemeral_send(interaction, "✅ Email verified ✅ Premium granted")
+                return
+            except discord.Forbidden:
+                await _safe_ephemeral_send(
+                    interaction,
+                    "✅ Email verified.\n\n⚠️ Your email is paid, but I couldn’t grant Premium due to server permissions/role hierarchy. Please contact an administrator.",
+                )
+                return
+        except Exception as e:
+            logger.error(f"Error in Access Panel EnterCodeModal: {e}", exc_info=True)
+            if guild:
+                await _log_to_bot_logs(
+                    bot,
+                    guild,
+                    title="❌ Access Panel: OTP Confirm Error",
+                    description=(
+                        f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                        f"**Email Hash:** `{_redact_hash(self.email_hash)}`\n"
+                        f"**Error:** `{type(e).__name__}: {e}`"
+                    ),
+                    color=discord.Color.red(),
+                )
+            await _safe_ephemeral_send(
+                interaction,
+                "❌ An unexpected error occurred while confirming your code. Please try again or contact an administrator.",
+            )
 
 
 class EnterCodeView(discord.ui.View):
