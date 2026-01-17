@@ -278,7 +278,7 @@ All configuration is done via environment variables. See `.env.example` for all 
 
 **Key Settings:**
 - `AUTO_ASSIGN_FREE_ON_JOIN` - Auto-assign free role on join (default: true)
-- `STRICT_REVOKE` - Revoke Premium if not in paid list (default: false)
+- `STRICT_REVOKE` - Revoke Premium if not in paid list (default: false). If enabled, removals from your paid CSV will revoke Premium on the next import/sync.
 - `ALERT_TIME` - Scheduled alert time (default: 16:10 ET)
 - `ALERT_TIMEZONE` - Timezone for alert schedule (default: America/New_York)
 - `ALERT_THRESHOLD_PERCENT` - Alert threshold (default: 10.0%)
