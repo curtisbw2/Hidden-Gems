@@ -1,16 +1,20 @@
-"""Price alerts cog: regular-hours daily move monitoring."""
+"""Price alerts cog: regular-hours daily move monitoring + intraday RTH move alerts."""
 import logging
 from datetime import datetime, timezone, date
-from typing import Optional
+from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
 from services.market_data import YahooFinanceProvider
-from utils.time import parse_time, get_timezone
+from utils.time import parse_time, get_timezone, is_market_open
 
 logger = logging.getLogger(__name__)
+
+
+ET = ZoneInfo("America/New_York")
 
 
 class AlertsCog(commands.Cog):
@@ -23,7 +27,7 @@ class AlertsCog(commands.Cog):
         self.market_data = YahooFinanceProvider()
         self.tickers = self.config.get_ticker_list()
         
-        # Start alert task
+        # Start alert task (daily close-to-close alerts)
         if not self.config.ALERT_CHECK_INTERVAL_MINUTES:
             # Scheduled time mode (default)
             self.alert_task.start()
@@ -31,12 +35,23 @@ class AlertsCog(commands.Cog):
             # Interval mode (legacy support)
             self.alert_task_interval.start()
     
+        # Start intraday alert polling (RTH-only)
+        if getattr(self.config, "ENABLE_INTRADAY_ALERTS", False):
+            try:
+                self.intraday_task.change_interval(seconds=float(self.config.INTRADAY_POLL_SECONDS))
+            except Exception:
+                # Keep default 60s if parsing fails
+                pass
+            self.intraday_task.start()
+
     def cog_unload(self):
         """Cleanup when cog is unloaded."""
         if self.alert_task.is_running():
             self.alert_task.cancel()
-        if hasattr(self, 'alert_task_interval') and self.alert_task_interval.is_running():
+        if hasattr(self, "alert_task_interval") and self.alert_task_interval.is_running():
             self.alert_task_interval.cancel()
+        if hasattr(self, "intraday_task") and self.intraday_task.is_running():
+            self.intraday_task.cancel()
     
     async def get_channel(self, guild: discord.Guild, channel_type: str) -> discord.TextChannel | None:
         """Get channel by type or ID."""
@@ -62,6 +77,15 @@ class AlertsCog(commands.Cog):
         
         return None
     
+    def get_trading_date(self, dt: datetime) -> str:
+        """Get trading date string (YYYY-MM-DD) in America/New_York timezone."""
+        ny_time = dt.astimezone(ET)
+        return ny_time.date().isoformat()
+
+    # -----------------
+    # Daily Alerts (existing behavior)
+    # -----------------
+
     @tasks.loop(minutes=1.0)
     async def alert_task(self):
         """Scheduled alert task - runs at configured time daily."""
@@ -101,14 +125,8 @@ class AlertsCog(commands.Cog):
         """Wait until bot is ready."""
         await self.bot.wait_until_ready()
     
-    def get_trading_date(self, dt: datetime) -> str:
-        """Get trading date string (YYYY-MM-DD) in America/New_York timezone."""
-        tz = get_timezone("America/New_York")
-        ny_time = dt.astimezone(tz)
-        return ny_time.date().isoformat()
-    
     async def check_alerts(self, force: bool = False):
-        """Check all tickers for alerts."""
+        """Check all tickers for daily close-to-close alerts."""
         if not self.bot.guilds:
             return
         
@@ -153,7 +171,7 @@ class AlertsCog(commands.Cog):
                 
                 # Get today's close and previous close
                 today_close = bars[0]["close"]  # Most recent bar
-                prev_close = bars[1]["close"]   # Previous trading day
+                prev_close = bars[1]["close"]  # Previous trading day
                 
                 # Calculate percent change
                 pct_change = ((today_close - prev_close) / prev_close) * 100
@@ -167,7 +185,7 @@ class AlertsCog(commands.Cog):
                         today_close, 
                         prev_close, 
                         pct_change,
-                        bars[0]["date"]
+                        bars[0]["date"],
                     )
                     
                     # Update alert state
@@ -175,7 +193,7 @@ class AlertsCog(commands.Cog):
                         ticker,
                         last_alert_date=trading_date,
                         last_alert_pct=pct_change,
-                        last_run_at=datetime.now(timezone.utc)
+                        last_run_at=datetime.now(timezone.utc),
                     )
                     
                     # Also record in alert_history
@@ -189,7 +207,7 @@ class AlertsCog(commands.Cog):
                     ticker,
                     last_alert_date=None,  # Don't change if no alert
                     last_alert_pct=None,
-                    last_run_at=datetime.now(timezone.utc)
+                    last_run_at=datetime.now(timezone.utc),
                 )
                 
                 success_count += 1
@@ -204,7 +222,7 @@ class AlertsCog(commands.Cog):
                 embed = discord.Embed(
                     title="📊 Alert Check Summary",
                     color=discord.Color.blue(),
-                    timestamp=datetime.now(timezone.utc)
+                    timestamp=datetime.now(timezone.utc),
                 )
                 embed.add_field(name="Tickers Checked", value=str(success_count), inline=True)
                 embed.add_field(name="Alerts Sent", value=str(alert_count), inline=True)
@@ -227,7 +245,7 @@ class AlertsCog(commands.Cog):
         today_close: float,
         prev_close: float,
         pct_change: float,
-        trading_date: date
+        trading_date: date,
     ):
         """Send price alert embed."""
         is_positive = pct_change >= 0
@@ -236,7 +254,7 @@ class AlertsCog(commands.Cog):
         embed = discord.Embed(
             title=f"🚨 10% Move Alert — ${ticker}",
             color=color,
-            timestamp=datetime.now(timezone.utc)
+            timestamp=datetime.now(timezone.utc),
         )
         
         embed.add_field(name="Price", value=f"${today_close:.2f}", inline=True)
@@ -256,59 +274,27 @@ class AlertsCog(commands.Cog):
     @app_commands.describe(force="Bypass once-per-day check")
     @app_commands.checks.has_permissions(administrator=True)
     async def alerts_test(self, interaction: discord.Interaction, force: bool = False):
-        """Test alert check immediately."""
+        """Test daily alert check immediately."""
         await interaction.response.defer(ephemeral=True)
         
         try:
-            # Check prerequisites
-            if not self.bot.guilds:
-                await interaction.followup.send(
-                    "❌ Bot is not in any guilds.",
-                    ephemeral=True
-                )
-                return
-            
-            guild = interaction.guild or self.bot.guilds[0]
-            
-            # Check if alerts channel exists
-            alerts_channel = await self.get_channel(guild, "alerts")
-            if not alerts_channel:
-                channel_id = self.config.get_channel_ids().get("alerts")
-                channel_name = self.config.CHANNEL_ALERTS
-                await interaction.followup.send(
-                    f"❌ Alerts channel not found!\n"
-                    f"• Looking for ID: {channel_id or 'Not set'}\n"
-                    f"• Looking for name: #{channel_name}\n"
-                    f"• Set `CHANNEL_ALERTS_ID` environment variable to: 1460785397079736420",
-                    ephemeral=True
-                )
-                return
-            
-            # Respond immediately, then run check in background
+            await self.check_alerts(force=force)
             await interaction.followup.send(
-                f"🔄 Starting alert check...\n"
-                f"• Force mode: {force}\n"
-                f"• Tickers: {len(self.tickers)}\n"
-                f"• This may take a moment. Check `#alerts` and `#bot-logs` for results.",
-                ephemeral=True
+                f"✅ Alert check completed. Force mode: {force}",
+                ephemeral=True,
             )
-            
-            # Run check in background task to avoid timeout
-            import asyncio
-            asyncio.create_task(self.check_alerts(force=force))
         except Exception as e:
             logger.error(f"Error in alerts_test: {e}", exc_info=True)
             await interaction.followup.send(
-                f"❌ Error running alert check: {str(e)}\n"
-                f"Check bot logs for details.",
-                ephemeral=True
+                f"❌ Error running alert check: {str(e)}",
+                ephemeral=True,
             )
     
     @app_commands.command(name="alerts_debug", description="Debug ticker data (admin only)")
     @app_commands.describe(ticker="Ticker symbol to debug")
     @app_commands.checks.has_permissions(administrator=True)
     async def alerts_debug(self, interaction: discord.Interaction, ticker: str):
-        """Debug ticker data."""
+        """Debug ticker data for daily alerts."""
         await interaction.response.defer(ephemeral=True)
         
         try:
@@ -319,7 +305,7 @@ class AlertsCog(commands.Cog):
             if not bars or len(bars) < 2:
                 await interaction.followup.send(
                     f"❌ Insufficient data for {ticker}. Need at least 2 trading days.",
-                    ephemeral=True
+                    ephemeral=True,
                 )
                 return
             
@@ -332,28 +318,28 @@ class AlertsCog(commands.Cog):
             embed = discord.Embed(
                 title=f"🔍 Debug: ${ticker}",
                 color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
             )
             
             embed.add_field(
                 name="Today's Close",
                 value=f"${today_close:.2f} ({bars[0]['date']})",
-                inline=False
+                inline=False,
             )
             embed.add_field(
                 name="Previous Close",
                 value=f"${prev_close:.2f} ({bars[1]['date']})",
-                inline=False
+                inline=False,
             )
             embed.add_field(
                 name="Percent Change",
                 value=f"{pct_change:+.2f}%",
-                inline=False
+                inline=False,
             )
             embed.add_field(
                 name="Threshold",
                 value=f"±{self.config.ALERT_THRESHOLD_PERCENT}%",
-                inline=False
+                inline=False,
             )
             
             # Show last 5 bars
@@ -368,8 +354,8 @@ class AlertsCog(commands.Cog):
             if state:
                 state_text = f"Last Alert Date: {state.get('last_alert_date', 'Never')}\n"
                 state_text += f"Last Alert %: {state.get('last_alert_pct', 'N/A')}\n"
-                if state.get('last_run_at'):
-                    last_run = state['last_run_at']
+                if state.get("last_run_at"):
+                    last_run = state["last_run_at"]
                     if isinstance(last_run, str):
                         last_run = datetime.fromisoformat(last_run)
                     state_text += f"Last Run: {last_run.strftime('%Y-%m-%d %H:%M UTC')}"
@@ -381,5 +367,415 @@ class AlertsCog(commands.Cog):
             logger.error(f"Error in alerts_debug: {e}", exc_info=True)
             await interaction.followup.send(
                 f"❌ Error debugging {ticker}: {str(e)}",
-                ephemeral=True
+                ephemeral=True,
             )
+
+    # -----------------
+    # Intraday Alerts (NEW behavior)
+    # -----------------
+
+    def _parse_intraday_thresholds(self) -> Tuple[float, float]:
+        raw = getattr(self.config, "INTRADAY_THRESHOLDS", "5,10") or "5,10"
+        try:
+            parts = [float(p.strip()) for p in raw.split(",") if p.strip()]
+        except Exception:
+            parts = [5.0, 10.0]
+        parts = sorted({abs(p) for p in parts if p > 0})
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        if len(parts) == 1:
+            return parts[0], parts[0] * 2
+        return 5.0, 10.0
+
+    def _zone_from_pct(self, pct: float, t1: float, t2: float) -> str:
+        # Zones:
+        # 0:  -t1 < pct < +t1
+        # +t1: +t1 <= pct < +t2
+        # -t1: -t2 < pct <= -t1
+        # +t2: pct >= +t2
+        # -t2: pct <= -t2
+        if pct >= t2:
+            return f"+{int(t2) if t2.is_integer() else t2}"
+        if pct <= -t2:
+            return f"-{int(t2) if t2.is_integer() else t2}"
+        if pct >= t1:
+            return f"+{int(t1) if t1.is_integer() else t1}"
+        if pct <= -t1:
+            return f"-{int(t1) if t1.is_integer() else t1}"
+        return "0"
+
+    def _zone_level(self, zone: str, t1: float, t2: float) -> int:
+        z = (zone or "0").strip()
+        zmap = {
+            "0": 0,
+            f"+{int(t1) if t1.is_integer() else t1}": 1,
+            f"+{int(t2) if t2.is_integer() else t2}": 2,
+            f"-{int(t1) if t1.is_integer() else t1}": -1,
+            f"-{int(t2) if t2.is_integer() else t2}": -2,
+        }
+        return zmap.get(z, 0)
+
+    def _should_send_zone_alert(self, prev_zone: str, curr_zone: str, t1: float, t2: float) -> bool:
+        """
+        Alert on "crossing into" a trigger zone, allowing repeats across the day, while
+        suppressing down-crosses within the same sign (e.g., +10 -> +5).
+        """
+        prev_level = self._zone_level(prev_zone, t1, t2)
+        curr_level = self._zone_level(curr_zone, t1, t2)
+
+        if prev_level == curr_level:
+            return False
+        if curr_level == 0:
+            return False  # never alert when entering zone 0
+
+        # Always alert if magnitude increased (0->±5, ±5->±10)
+        if abs(curr_level) > abs(prev_level):
+            return True
+
+        # Always alert if sign changed into a trigger zone (e.g., +5 -> -5)
+        if prev_level == 0:
+            return True
+        if (prev_level > 0 and curr_level < 0) or (prev_level < 0 and curr_level > 0):
+            return True
+
+        # Otherwise it's a down-cross within the same sign (e.g., +10 -> +5), suppress.
+        return False
+
+    def _parse_db_timestamp(self, v) -> Optional[datetime]:
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            if v.tzinfo is None:
+                return v.replace(tzinfo=timezone.utc)
+            return v.astimezone(timezone.utc)
+        if isinstance(v, str):
+            try:
+                dt = datetime.fromisoformat(v)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                return None
+        return None
+
+    def _alerts_role_mention(self, guild: discord.Guild) -> str:
+        role_id = getattr(self.config, "ALERTS_ROLE_ID", None)
+        if role_id:
+            return f"<@&{role_id}>"
+
+        name = (getattr(self.config, "ALERTS_ROLE_NAME", None) or "Alerts").strip()
+        role = discord.utils.get(guild.roles, name=name)
+        if not role:
+            # Case-insensitive fallback
+            name_cf = name.casefold()
+            role = next((r for r in guild.roles if r.name.casefold() == name_cf), None)
+        if role:
+            return role.mention
+
+        logger.warning("Alerts role not found; set ALERTS_ROLE_ID (preferred) or ALERTS_ROLE_NAME")
+        return "@Alerts"
+
+    async def send_intraday_alert(
+        self,
+        channel: discord.TextChannel,
+        guild: discord.Guild,
+        ticker: str,
+        open_price: float,
+        current_price: float,
+        pct_from_open: float,
+        zone: str,
+        as_of_et: datetime,
+    ) -> None:
+        """Send intraday alert embed and mention Alerts role."""
+        is_positive = pct_from_open >= 0
+        color = discord.Color.green() if is_positive else discord.Color.red()
+
+        embed = discord.Embed(
+            title=f"🚨 Intraday Move Alert — ${ticker}",
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="From Open", value=f"{pct_from_open:+.2f}%", inline=True)
+        embed.add_field(name="Open", value=f"${open_price:.2f}", inline=True)
+        embed.add_field(name="Current", value=f"${current_price:.2f}", inline=True)
+        embed.add_field(name="Zone", value=str(zone), inline=True)
+        embed.add_field(name="As of", value=as_of_et.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"), inline=True)
+
+        mention = self._alerts_role_mention(guild)
+        await channel.send(content=mention, embed=embed)
+
+    @tasks.loop(seconds=60.0)
+    async def intraday_task(self):
+        """Intraday alert task - polls during RTH only."""
+        try:
+            if not getattr(self.config, "ENABLE_INTRADAY_ALERTS", False):
+                return
+            if not is_market_open(ET):
+                return
+            await self.check_intraday_alerts()
+        except Exception as e:
+            logger.error(f"Error in intraday task: {e}", exc_info=True)
+
+    @intraday_task.before_loop
+    async def before_intraday_task(self):
+        """Wait until bot is ready."""
+        await self.bot.wait_until_ready()
+
+    async def check_intraday_alerts(self, force: bool = False, tickers: Optional[list[str]] = None) -> None:
+        """Check tickers for intraday zone-crossing alerts."""
+        if not self.bot.guilds:
+            return
+
+        guild = self.bot.guilds[0]
+        alerts_channel = await self.get_channel(guild, "alerts")
+        if not alerts_channel:
+            logger.warning("Alerts channel not found (intraday)")
+            return
+
+        now_et = datetime.now(ET)
+        trading_date = now_et.date().isoformat()
+        t1, t2 = self._parse_intraday_thresholds()
+        cooldown = int(getattr(self.config, "INTRADAY_ALERT_COOLDOWN_SECONDS", 120) or 120)
+
+        for ticker in (tickers or self.tickers):
+            ticker = ticker.upper().strip()
+            try:
+                state = await self.db.get_intraday_state(ticker, trading_date)
+                prev_zone = (state.get("last_zone") if state else "0") or "0"
+                open_price = state.get("open_price") if state else None
+                last_alert_at = self._parse_db_timestamp(state.get("last_alert_at")) if state else None
+
+                if not open_price:
+                    open_price = await self.market_data.get_today_rth_open(ticker, now_et.date())
+                    if not open_price:
+                        logger.debug(f"[intraday] {ticker}: missing today's open")
+                        continue
+
+                latest = await self.market_data.get_latest_rth_price_1m(ticker, timezone=ET)
+                if not latest:
+                    logger.debug(f"[intraday] {ticker}: missing latest 1m RTH price")
+                    continue
+
+                current_price, as_of_et = latest
+                pct_from_open = ((current_price - open_price) / open_price) * 100
+                curr_zone = self._zone_from_pct(pct_from_open, t1, t2)
+
+                should_alert = self._should_send_zone_alert(prev_zone, curr_zone, t1, t2)
+
+                now_utc = datetime.now(timezone.utc)
+                cooldown_ok = force or (not last_alert_at) or ((now_utc - last_alert_at).total_seconds() >= cooldown)
+
+                new_last_alert_at = last_alert_at
+                if should_alert and cooldown_ok:
+                    await self.send_intraday_alert(
+                        alerts_channel,
+                        guild,
+                        ticker,
+                        open_price=float(open_price),
+                        current_price=float(current_price),
+                        pct_from_open=float(pct_from_open),
+                        zone=curr_zone,
+                        as_of_et=as_of_et,
+                    )
+                    new_last_alert_at = now_utc
+                    await self.db.record_intraday_alert_event(
+                        ticker=ticker,
+                        trading_date=trading_date,
+                        zone=curr_zone,
+                        pct=float(pct_from_open),
+                        price=float(current_price),
+                        created_at=now_utc,
+                    )
+                    logger.info(f"[intraday] alert {ticker} zone={curr_zone} pct={pct_from_open:+.2f}%")
+                elif should_alert and not cooldown_ok:
+                    logger.debug(f"[intraday] cooldown suppress {ticker} zone={curr_zone}")
+
+                # Persist state every poll (regardless of whether we alert)
+                await self.db.upsert_intraday_state(
+                    ticker=ticker,
+                    trading_date=trading_date,
+                    open_price=float(open_price),
+                    last_price=float(current_price),
+                    last_pct=float(pct_from_open),
+                    last_zone=curr_zone,
+                    last_alert_at=new_last_alert_at,
+                    updated_at=now_utc,
+                )
+
+            except Exception as e:
+                logger.error(f"[intraday] error checking {ticker}: {e}", exc_info=True)
+
+    @app_commands.command(name="intraday_test", description="Test intraday zone-crossing logic (admin only)")
+    @app_commands.describe(
+        ticker="Ticker symbol",
+        open="RTH open price baseline",
+        current="Current price",
+        previous_zone="Optional previous zone (0, +5, -5, +10, -10)",
+        force="Bypass cooldown",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def intraday_test(
+        self,
+        interaction: discord.Interaction,
+        ticker: str,
+        open: float,
+        current: float,
+        previous_zone: Optional[str] = None,
+        force: bool = False,
+    ):
+        """Compute zone and run the same crossing logic; posts to #alerts when it should."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if not self.bot.guilds:
+                await interaction.followup.send("❌ Bot is not in any guild.", ephemeral=True)
+                return
+
+            guild = self.bot.guilds[0]
+            alerts_channel = await self.get_channel(guild, "alerts")
+            if not alerts_channel:
+                await interaction.followup.send("❌ Alerts channel not found.", ephemeral=True)
+                return
+
+            ticker = ticker.upper().strip()
+            now_et = datetime.now(ET)
+            trading_date = now_et.date().isoformat()
+            t1, t2 = self._parse_intraday_thresholds()
+
+            pct_from_open = ((current - open) / open) * 100
+            curr_zone = self._zone_from_pct(pct_from_open, t1, t2)
+
+            state = await self.db.get_intraday_state(ticker, trading_date)
+            db_prev_zone = (state.get("last_zone") if state else "0") or "0"
+            prev_zone = (previous_zone or db_prev_zone).strip()
+            if prev_zone not in {"0", f"+{int(t1) if t1.is_integer() else t1}", f"-{int(t1) if t1.is_integer() else t1}",
+                                f"+{int(t2) if t2.is_integer() else t2}", f"-{int(t2) if t2.is_integer() else t2}"}:
+                prev_zone = db_prev_zone
+
+            should_alert = self._should_send_zone_alert(prev_zone, curr_zone, t1, t2)
+
+            now_utc = datetime.now(timezone.utc)
+            cooldown = int(getattr(self.config, "INTRADAY_ALERT_COOLDOWN_SECONDS", 120) or 120)
+            last_alert_at = self._parse_db_timestamp(state.get("last_alert_at")) if state else None
+            cooldown_ok = force or (not last_alert_at) or ((now_utc - last_alert_at).total_seconds() >= cooldown)
+
+            did_post = False
+            new_last_alert_at = last_alert_at
+            if should_alert and cooldown_ok:
+                await self.send_intraday_alert(
+                    alerts_channel,
+                    guild,
+                    ticker,
+                    open_price=float(open),
+                    current_price=float(current),
+                    pct_from_open=float(pct_from_open),
+                    zone=curr_zone,
+                    as_of_et=now_et,
+                )
+                did_post = True
+                new_last_alert_at = now_utc
+                await self.db.record_intraday_alert_event(
+                    ticker=ticker,
+                    trading_date=trading_date,
+                    zone=curr_zone,
+                    pct=float(pct_from_open),
+                    price=float(current),
+                    created_at=now_utc,
+                )
+
+            await self.db.upsert_intraday_state(
+                ticker=ticker,
+                trading_date=trading_date,
+                open_price=float(open),
+                last_price=float(current),
+                last_pct=float(pct_from_open),
+                last_zone=curr_zone,
+                last_alert_at=new_last_alert_at,
+                updated_at=now_utc,
+            )
+
+            await interaction.followup.send(
+                f"ticker={ticker} prev_zone={prev_zone} curr_zone={curr_zone} pct={pct_from_open:+.2f}% "
+                f"should_alert={should_alert} cooldown_ok={cooldown_ok} posted={did_post}",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.error(f"Error in intraday_test: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+    @app_commands.command(name="intraday_debug", description="Debug intraday state for a ticker (admin only)")
+    @app_commands.describe(ticker="Ticker symbol")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def intraday_debug(self, interaction: discord.Interaction, ticker: str):
+        """Show open, latest, pct, zone, last_zone, last_alert_at, cooldown, and whether market open."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            ticker = ticker.upper().strip()
+            now_et = datetime.now(ET)
+            trading_date = now_et.date().isoformat()
+            t1, t2 = self._parse_intraday_thresholds()
+            cooldown = int(getattr(self.config, "INTRADAY_ALERT_COOLDOWN_SECONDS", 120) or 120)
+
+            state = await self.db.get_intraday_state(ticker, trading_date)
+            open_price = state.get("open_price") if state else None
+            last_zone = (state.get("last_zone") if state else "0") or "0"
+            last_alert_at = self._parse_db_timestamp(state.get("last_alert_at")) if state else None
+
+            latest = await self.market_data.get_latest_rth_price_1m(ticker, timezone=ET)
+            current_price = None
+            as_of_et = None
+            if latest:
+                current_price, as_of_et = latest
+
+            pct_from_open = None
+            curr_zone = None
+            if open_price and current_price:
+                pct_from_open = ((current_price - open_price) / open_price) * 100
+                curr_zone = self._zone_from_pct(pct_from_open, t1, t2)
+
+            embed = discord.Embed(
+                title=f"🧪 Intraday Debug — ${ticker}",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Market Open (RTH)", value=str(is_market_open(ET)), inline=True)
+            embed.add_field(name="Trading Date (ET)", value=trading_date, inline=True)
+            embed.add_field(name="Cooldown (sec)", value=str(cooldown), inline=True)
+            embed.add_field(name="Open", value=f"${open_price:.2f}" if open_price else "N/A", inline=True)
+            embed.add_field(name="Current (1m RTH)", value=f"${current_price:.2f}" if current_price else "N/A", inline=True)
+            embed.add_field(name="From Open", value=f"{pct_from_open:+.2f}%" if pct_from_open is not None else "N/A", inline=True)
+            embed.add_field(name="Zone", value=str(curr_zone or "N/A"), inline=True)
+            embed.add_field(name="Last Zone (DB)", value=str(last_zone), inline=True)
+            embed.add_field(
+                name="Last Alert At (UTC)",
+                value=last_alert_at.strftime("%Y-%m-%d %H:%M:%S UTC") if last_alert_at else "N/A",
+                inline=False,
+            )
+            if as_of_et:
+                embed.add_field(name="As of (ET)", value=as_of_et.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"), inline=False)
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error in intraday_debug: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+    @app_commands.command(name="intraday_force_reset", description="Reset intraday state for today (admin only)")
+    @app_commands.describe(ticker="Optional ticker to reset (otherwise resets all tracked tickers for today)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def intraday_force_reset(self, interaction: discord.Interaction, ticker: Optional[str] = None):
+        """Reset intraday_state for today to allow re-testing."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            now_et = datetime.now(ET)
+            trading_date = now_et.date().isoformat()
+            t = ticker.upper().strip() if ticker else None
+            deleted = await self.db.delete_intraday_state(trading_date=trading_date, ticker=t)
+            await interaction.followup.send(
+                f"✅ Reset intraday state for trading_date={trading_date} ticker={t or 'ALL'} (rows deleted: {deleted})",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.error(f"Error in intraday_force_reset: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)

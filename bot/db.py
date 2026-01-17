@@ -148,6 +148,34 @@ class Database:
                 last_run_at TIMESTAMP WITH TIME ZONE
             )
         """)
+
+        # Intraday state machine table (per ticker + trading_date)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS intraday_state (
+                ticker VARCHAR(10) NOT NULL,
+                trading_date DATE NOT NULL,
+                open_price DOUBLE PRECISION,
+                last_price DOUBLE PRECISION,
+                last_pct DOUBLE PRECISION,
+                last_zone VARCHAR(10) DEFAULT '0',
+                last_alert_at TIMESTAMP WITH TIME ZONE,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                PRIMARY KEY (ticker, trading_date)
+            )
+        """)
+
+        # Optional: intraday alert events log
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS intraday_alert_events (
+                id BIGSERIAL PRIMARY KEY,
+                ticker VARCHAR(10) NOT NULL,
+                trading_date DATE NOT NULL,
+                zone VARCHAR(10) NOT NULL,
+                pct DOUBLE PRECISION NOT NULL,
+                price DOUBLE PRECISION NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
         
         # Import tracking table
         await conn.execute("""
@@ -277,6 +305,34 @@ class Database:
                 last_alert_date TEXT,
                 last_alert_pct REAL,
                 last_run_at TIMESTAMP
+            )
+        """)
+
+        # Intraday state machine table (per ticker + trading_date)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS intraday_state (
+                ticker TEXT NOT NULL,
+                trading_date TEXT NOT NULL,
+                open_price REAL,
+                last_price REAL,
+                last_pct REAL,
+                last_zone TEXT DEFAULT '0',
+                last_alert_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (ticker, trading_date)
+            )
+        """)
+
+        # Optional: intraday alert events log
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS intraday_alert_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                trading_date TEXT NOT NULL,
+                zone TEXT NOT NULL,
+                pct REAL NOT NULL,
+                price REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -958,6 +1014,176 @@ class Database:
                     if row and row["max_run_at"]:
                         return datetime.fromisoformat(row["max_run_at"])
                     return None
+
+    # Intraday alert state operations
+    async def get_intraday_state(self, ticker: str, trading_date: str) -> Optional[Dict[str, Any]]:
+        """Get intraday state for ticker + trading_date (YYYY-MM-DD ET)."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT * FROM intraday_state WHERE ticker = $1 AND trading_date = $2",
+                    ticker,
+                    trading_date,
+                )
+                return dict(row) if row else None
+        else:
+            async with self.get_connection() as db:
+                async with db.execute(
+                    "SELECT * FROM intraday_state WHERE ticker = ? AND trading_date = ?",
+                    (ticker, trading_date),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return dict(row) if row else None
+
+    async def upsert_intraday_state(
+        self,
+        ticker: str,
+        trading_date: str,
+        open_price: Optional[float],
+        last_price: Optional[float],
+        last_pct: Optional[float],
+        last_zone: str,
+        last_alert_at: Optional[datetime] = None,
+        updated_at: Optional[datetime] = None,
+    ) -> None:
+        """Insert/update intraday state row."""
+        if updated_at is None:
+            updated_at = datetime.now(timezone.utc)
+
+        sqlite_last_alert_at = last_alert_at
+        sqlite_updated_at = updated_at
+        if not self.use_postgres:
+            if isinstance(last_alert_at, datetime):
+                if last_alert_at.tzinfo is None:
+                    last_alert_at = last_alert_at.replace(tzinfo=timezone.utc)
+                sqlite_last_alert_at = last_alert_at.isoformat()
+            if isinstance(updated_at, datetime):
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                sqlite_updated_at = updated_at.isoformat()
+
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO intraday_state
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
+                    VALUES
+                        ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (ticker, trading_date)
+                    DO UPDATE SET
+                        open_price = COALESCE($3, intraday_state.open_price),
+                        last_price = $4,
+                        last_pct = $5,
+                        last_zone = $6,
+                        last_alert_at = $7,
+                        updated_at = $8
+                    """,
+                    ticker,
+                    trading_date,
+                    open_price,
+                    last_price,
+                    last_pct,
+                    last_zone,
+                    last_alert_at,
+                    updated_at,
+                )
+        else:
+            async with self.get_connection() as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO intraday_state
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ticker,
+                        trading_date,
+                        open_price,
+                        last_price,
+                        last_pct,
+                        last_zone,
+                        sqlite_last_alert_at,
+                        sqlite_updated_at,
+                    ),
+                )
+
+    async def delete_intraday_state(self, trading_date: str, ticker: Optional[str] = None) -> int:
+        """Delete intraday state rows for a trading_date; optionally for a single ticker. Returns rows deleted."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                if ticker:
+                    res = await conn.execute(
+                        "DELETE FROM intraday_state WHERE trading_date = $1 AND ticker = $2",
+                        trading_date,
+                        ticker,
+                    )
+                else:
+                    res = await conn.execute(
+                        "DELETE FROM intraday_state WHERE trading_date = $1",
+                        trading_date,
+                    )
+                # asyncpg returns like "DELETE <n>"
+                try:
+                    return int(str(res).split()[-1])
+                except Exception:
+                    return 0
+        else:
+            async with self.get_connection() as db:
+                if ticker:
+                    cursor = await db.execute(
+                        "DELETE FROM intraday_state WHERE trading_date = ? AND ticker = ?",
+                        (trading_date, ticker),
+                    )
+                else:
+                    cursor = await db.execute(
+                        "DELETE FROM intraday_state WHERE trading_date = ?",
+                        (trading_date,),
+                    )
+                return cursor.rowcount or 0
+
+    async def record_intraday_alert_event(
+        self,
+        ticker: str,
+        trading_date: str,
+        zone: str,
+        pct: float,
+        price: float,
+        created_at: Optional[datetime] = None,
+    ) -> None:
+        """Record an intraday alert event (optional audit log)."""
+        if created_at is None:
+            created_at = datetime.now(timezone.utc)
+
+        sqlite_created_at = created_at
+        if not self.use_postgres:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            sqlite_created_at = created_at.isoformat()
+
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO intraday_alert_events (ticker, trading_date, zone, pct, price, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    ticker,
+                    trading_date,
+                    zone,
+                    pct,
+                    price,
+                    created_at,
+                )
+        else:
+            async with self.get_connection() as db:
+                await db.execute(
+                    """
+                    INSERT INTO intraday_alert_events (ticker, trading_date, zone, pct, price, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (ticker, trading_date, zone, pct, price, sqlite_created_at),
+                )
     
     # Import history
     async def record_import(

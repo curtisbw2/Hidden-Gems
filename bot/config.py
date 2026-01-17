@@ -66,6 +66,16 @@ class Config:
     ALERT_CHECK_INTERVAL_MINUTES: Optional[int] = None  # If set, check every N minutes but only alert once per day
     ALERT_THRESHOLD_PERCENT: float = 10.0
     ALERT_TICKERS: str = "RR,ONDS,ACHR,UMAC,AMPX,LPTH"
+
+    # Intraday Alerts (RTH only)
+    ENABLE_INTRADAY_ALERTS: bool = False
+    INTRADAY_POLL_SECONDS: int = 60
+    INTRADAY_THRESHOLDS: str = "5,10"
+    INTRADAY_ALERT_COOLDOWN_SECONDS: int = 120
+
+    # Alerts Role (for @mention in #alerts)
+    ALERTS_ROLE_ID: Optional[int] = None
+    ALERTS_ROLE_NAME: str = "Alerts"
     
     # Substack RSS Monitoring
     SUBSTACK_RSS_URL: Optional[str] = None  # e.g., "https://yourpublication.substack.com/feed"
@@ -104,6 +114,10 @@ class Config:
                 return float(val)
             except ValueError:
                 return default
+
+        def get_str(key: str, default: str = "") -> str:
+            val = os.getenv(key)
+            return val if val is not None else default
         
         guild_id = get_int("GUILD_ID")
         
@@ -150,6 +164,14 @@ class Config:
             ALERT_CHECK_INTERVAL_MINUTES=get_int("ALERT_CHECK_INTERVAL_MINUTES"),
             ALERT_THRESHOLD_PERCENT=get_float("ALERT_THRESHOLD_PERCENT", 10.0),
             ALERT_TICKERS=os.getenv("ALERT_TICKERS", "RR,ONDS,ACHR,UMAC,AMPX,LPTH"),
+
+            ENABLE_INTRADAY_ALERTS=get_bool("ENABLE_INTRADAY_ALERTS", False),
+            INTRADAY_POLL_SECONDS=get_int("INTRADAY_POLL_SECONDS", 60) or 60,
+            INTRADAY_THRESHOLDS=get_str("INTRADAY_THRESHOLDS", "5,10"),
+            INTRADAY_ALERT_COOLDOWN_SECONDS=get_int("INTRADAY_ALERT_COOLDOWN_SECONDS", 120) or 120,
+
+            ALERTS_ROLE_ID=get_int("ALERTS_ROLE_ID"),
+            ALERTS_ROLE_NAME=get_str("ALERTS_ROLE_NAME", "Alerts"),
             
             SUBSTACK_RSS_URL=os.getenv("SUBSTACK_RSS_URL"),
             SUBSTACK_CHECK_INTERVAL_MINUTES=get_int("SUBSTACK_CHECK_INTERVAL_MINUTES", 15),
