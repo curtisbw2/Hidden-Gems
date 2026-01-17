@@ -187,6 +187,24 @@ class Database:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_verify_requests_status ON verify_requests(status)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_verify_requests_user ON verify_requests(discord_user_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_otp_expires ON otp_codes(expires_at)")
+
+        # Lightweight migrations for existing databases (idempotent)
+        await self._migrate_postgres(conn)
+
+    async def _migrate_postgres(self, conn: asyncpg.Connection) -> None:
+        """Best-effort Postgres migrations for evolving schemas."""
+        # users
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_hash VARCHAR(64)")
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_at TIMESTAMP WITH TIME ZONE")
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()")
+
+        # paid_emails
+        await conn.execute("ALTER TABLE paid_emails ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
+
+        # otp_codes
+        await conn.execute("ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0")
+        await conn.execute("ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()")
     
     async def _create_schema_sqlite(self, db: aiosqlite.Connection):
         """Create SQLite database schema."""
@@ -300,6 +318,37 @@ class Database:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_verify_requests_status ON verify_requests(status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_verify_requests_user ON verify_requests(discord_user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_otp_expires ON otp_codes(expires_at)")
+
+        # Lightweight migrations for existing databases (idempotent)
+        await self._migrate_sqlite(db)
+
+    async def _migrate_sqlite(self, db: aiosqlite.Connection) -> None:
+        """Best-effort SQLite migrations for evolving schemas."""
+        async def _columns(table: str) -> set[str]:
+            async with db.execute(f"PRAGMA table_info({table})") as cursor:
+                rows = await cursor.fetchall()
+            return {r["name"] if isinstance(r, aiosqlite.Row) else r[1] for r in rows}
+
+        # users
+        user_cols = await _columns("users")
+        if "email_hash" not in user_cols:
+            await db.execute("ALTER TABLE users ADD COLUMN email_hash TEXT UNIQUE")
+        if "email_verified" not in user_cols:
+            await db.execute("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE")
+        if "linked_at" not in user_cols:
+            await db.execute("ALTER TABLE users ADD COLUMN linked_at TIMESTAMP")
+
+        # paid_emails
+        paid_cols = await _columns("paid_emails")
+        if "active" not in paid_cols:
+            await db.execute("ALTER TABLE paid_emails ADD COLUMN active BOOLEAN DEFAULT TRUE")
+
+        # otp_codes
+        otp_cols = await _columns("otp_codes")
+        if "attempts" not in otp_cols:
+            await db.execute("ALTER TABLE otp_codes ADD COLUMN attempts INTEGER DEFAULT 0")
+        if "created_at" not in otp_cols:
+            await db.execute("ALTER TABLE otp_codes ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     
     @asynccontextmanager
     async def get_connection(self):
@@ -407,6 +456,14 @@ class Database:
     # OTP operations
     async def store_otp(self, discord_user_id: int, code_hash: str, email_hash: str, expires_at: datetime) -> None:
         """Store OTP code hash with email hash."""
+        # Normalize expires_at representation:
+        # - Postgres can store tz-aware datetime directly
+        # - SQLite comparisons are most reliable when storing ISO-8601 text
+        sqlite_expires = expires_at
+        if not self.use_postgres and isinstance(expires_at, datetime):
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            sqlite_expires = expires_at.isoformat()
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 await conn.execute(
@@ -423,12 +480,13 @@ class Database:
                     """INSERT OR REPLACE INTO otp_codes 
                        (discord_user_id, code_hash, email_hash, expires_at, attempts)
                        VALUES (?, ?, ?, ?, 0)""",
-                    (discord_user_id, code_hash, email_hash, expires_at)
+                    (discord_user_id, code_hash, email_hash, sqlite_expires)
                 )
     
     async def get_otp(self, discord_user_id: int, code_hash: str) -> Optional[Dict[str, Any]]:
         """Get OTP record."""
         now = datetime.now(timezone.utc)
+        sqlite_now = now.isoformat()
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
@@ -442,7 +500,7 @@ class Database:
                 async with db.execute(
                     """SELECT * FROM otp_codes 
                        WHERE discord_user_id = ? AND code_hash = ? AND expires_at > ?""",
-                    (discord_user_id, code_hash, now)
+                    (discord_user_id, code_hash, sqlite_now)
                 ) as cursor:
                     row = await cursor.fetchone()
                     return dict(row) if row else None
@@ -450,6 +508,7 @@ class Database:
     async def get_otp_by_email_hash(self, discord_user_id: int, email_hash: str) -> Optional[Dict[str, Any]]:
         """Get OTP record by email hash."""
         now = datetime.now(timezone.utc)
+        sqlite_now = now.isoformat()
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
@@ -465,7 +524,7 @@ class Database:
                     """SELECT * FROM otp_codes 
                        WHERE discord_user_id = ? AND email_hash = ? AND expires_at > ?
                        ORDER BY created_at DESC LIMIT 1""",
-                    (discord_user_id, email_hash, now)
+                    (discord_user_id, email_hash, sqlite_now)
                 ) as cursor:
                     row = await cursor.fetchone()
                     return dict(row) if row else None
@@ -499,10 +558,27 @@ class Database:
                     "DELETE FROM otp_codes WHERE discord_user_id = ?",
                     (discord_user_id,)
                 )
+
+    async def delete_otps_for_user_email(self, discord_user_id: int, email_hash: str) -> None:
+        """Delete OTP codes for a user scoped to a specific email hash."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM otp_codes WHERE discord_user_id = $1 AND email_hash = $2",
+                    discord_user_id,
+                    email_hash,
+                )
+        else:
+            async with self.get_connection() as db:
+                await db.execute(
+                    "DELETE FROM otp_codes WHERE discord_user_id = ? AND email_hash = ?",
+                    (discord_user_id, email_hash),
+                )
     
     async def cleanup_expired_otps(self) -> None:
         """Clean up expired OTP codes."""
         now = datetime.now(timezone.utc)
+        sqlite_now = now.isoformat()
         if self.use_postgres:
             async with self.pool.acquire() as conn:
                 await conn.execute(
@@ -513,7 +589,7 @@ class Database:
             async with self.get_connection() as db:
                 await db.execute(
                     "DELETE FROM otp_codes WHERE expires_at < ?",
-                    (now,)
+                    (sqlite_now,)
                 )
     
     # Verification queue operations

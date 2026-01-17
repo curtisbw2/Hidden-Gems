@@ -198,7 +198,7 @@ The bot can run on any platform that supports Python:
 - `/verify_premium` - Request Premium via mod queue (use in #verify)
 - `/submit_proof` - Submit proof attachment after `/verify_premium`
 - `/link_email <email>` - Link Substack email (sends OTP)
-- `/confirm_code <code> <email>` - Confirm email with OTP code
+- `/confirm_code <code> <email>` - Confirm email with OTP code (**code first, email second**)
 - `/status` - View bot status
 
 ### Mod/Admin Commands
@@ -322,6 +322,16 @@ All configuration is done via environment variables. See `.env.example` for all 
 - Verify SendGrid API key is correct
 - Check `FROM_EMAIL` is verified in SendGrid
 - Check SendGrid account isn't suspended
+
+**Email OTP received but /confirm_code “does nothing”:**
+- Make sure you run the command **in the server** (not DMs)
+- Make sure you use the **same email** you used with `/link_email`
+- Codes **expire** after `OTP_EXPIRY_MINUTES` (default: 10). If expired, run `/link_email <email>` again
+- After `OTP_MAX_ATTEMPTS` wrong codes (default: 5), the code locks and you must re-run `/link_email <email>`
+- If your email is paid but Premium isn’t granted immediately:
+  - Ensure the bot has **Manage Roles** permission
+  - Ensure the bot’s highest role is **above** `Premium Member` in the role hierarchy
+  - Check `#bot-logs` for detailed OTP confirmation + role assignment logs
 
 **Alerts not triggering:**
 - Check `#alerts` channel exists and bot has permission to send embeds
