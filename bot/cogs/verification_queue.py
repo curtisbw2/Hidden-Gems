@@ -12,6 +12,134 @@ from services.rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
 
+def _attachment_is_image(attachment: discord.Attachment) -> bool:
+    """Return True if the attachment is an image (best-effort)."""
+    try:
+        if attachment.content_type and attachment.content_type.startswith("image/"):
+            return True
+    except Exception:
+        pass
+    name = (getattr(attachment, "filename", "") or "").lower()
+    return name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+
+
+class UploadScreenshotDMButton(discord.ui.Button):
+    """Collect proof via DM so screenshots are never public."""
+
+    def __init__(self, cog: "VerificationQueueCog"):
+        super().__init__(label="Upload Screenshot (DM)", style=discord.ButtonStyle.primary)
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        # Must have pending info from the modal
+        pending_info = self.cog.pending_requests.get(interaction.user.id)
+        if not pending_info:
+            await interaction.followup.send(
+                "❌ I don't see an active verification request. Please run `/verify_premium` again first.\n\n"
+                "**Your screenshot will only be visible to moderators.**",
+                ephemeral=True
+            )
+            return
+
+        # Block if user already has a pending verification request in DB
+        pending = await self.cog.db.get_pending_verify_request(interaction.user.id)
+        if pending:
+            await interaction.followup.send(
+                "❌ You already have a pending verification request. Please wait for it to be reviewed.",
+                ephemeral=True
+            )
+            return
+
+        claimed_email_hash = pending_info.get("email_hash")
+
+        # DM upload prompt
+        try:
+            dm = await interaction.user.create_dm()
+            await dm.send(
+                "🖼️ **Premium Verification – Upload**\n\n"
+                "Please reply to this DM with your Substack subscription screenshot attached.\n\n"
+                "**Important:** Do **not** post screenshots in the public `#verify` channel.\n"
+                "**Your screenshot will only be visible to moderators.**\n\n"
+                f"⏳ You have **{self.cog.config.PROOF_TIMEOUT_MINUTES} minutes** to upload."
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I couldn't DM you. Please enable DMs from this server and try again (or contact a moderator).",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            "✅ Check your DMs for an upload prompt.\n\n**Your screenshot will only be visible to moderators.**",
+            ephemeral=True
+        )
+
+        timeout_seconds = int(self.cog.config.PROOF_TIMEOUT_MINUTES * 60)
+
+        def check(msg: discord.Message) -> bool:
+            if msg.author.id != interaction.user.id:
+                return False
+            if msg.channel.id != dm.id:
+                return False
+            if not msg.attachments:
+                return False
+            return any(_attachment_is_image(a) for a in msg.attachments)
+
+        try:
+            proof_msg: discord.Message = await self.cog.bot.wait_for("message", timeout=timeout_seconds, check=check)
+        except Exception:
+            try:
+                await dm.send(
+                    "⏳ Upload timed out. Please go back to `#verify`, run `/verify_premium` again, and retry.\n\n"
+                    "**Your screenshot will only be visible to moderators.**"
+                )
+            except Exception:
+                pass
+            return
+
+        attachment_urls = [a.url for a in proof_msg.attachments if _attachment_is_image(a)]
+        if not attachment_urls:
+            try:
+                await dm.send("❌ I didn't detect an image attachment. Please try again.")
+            except Exception:
+                pass
+            return
+
+        # Clear pending info now that we have proof
+        pending_info = self.cog.pending_requests.pop(interaction.user.id, pending_info)
+
+        # Process immediately (auto-approve if email is in paid list, else create mod-queue request)
+        try:
+            await self.cog.process_proof_submission(
+                interaction=interaction,
+                claimed_email_hash=claimed_email_hash,
+                attachment_urls=attachment_urls
+            )
+        except Exception as e:
+            logger.error(f"Error processing DM proof submission: {e}", exc_info=True)
+            try:
+                await dm.send("❌ An error occurred while submitting your proof. Please try again later or contact a moderator.")
+            except Exception:
+                pass
+
+
+class UploadScreenshotDMView(discord.ui.View):
+    """Ephemeral view that prompts DM-based upload."""
+
+    def __init__(self, cog: "VerificationQueueCog"):
+        super().__init__(timeout=600)
+        self.add_item(UploadScreenshotDMButton(cog))
+
 
 class VerifyModal(discord.ui.Modal, title="Premium Verification Request"):
     """Modal for verification request."""
@@ -50,21 +178,17 @@ class VerifyModal(discord.ui.Modal, title="Premium Verification Request"):
             "email_hash": claimed_email_hash,
             "notes": self.notes.value if self.notes.value else None
         }
-        
-        # Check if email is in paid list (for user feedback)
-        message = f"✅ Request received! Please attach your proof image in your next message in this channel "
-        message += f"within {self.cog.config.PROOF_TIMEOUT_MINUTES} minutes, then run `/submit_proof`.\n\n"
-        
-        if claimed_email_hash:
-            is_paid = await self.cog.db.is_email_paid(claimed_email_hash)
-            if is_paid:
-                message += "💡 **Good news!** Your email is in our paid subscriber list. After you submit proof, you'll be auto-approved!"
-            else:
-                message += "ℹ️ Your email wasn't found in our paid subscriber list. A moderator will review your request."
-        else:
-            message += "ℹ️ **Tip:** Providing your email helps us verify faster if you're in our paid subscriber list."
-        
-        await interaction.followup.send(message, ephemeral=True)
+
+        # DM-based upload prompt (screenshots must never be public)
+        view = UploadScreenshotDMView(self.cog)
+        await interaction.followup.send(
+            "✅ Request received!\n\n"
+            "**Do not post screenshots in this channel.**\n"
+            "**Your screenshot will only be visible to moderators.**\n\n"
+            "Click the button below to receive a DM upload prompt.",
+            view=view,
+            ephemeral=True
+        )
 
 
 class VerifyQueueButtons(discord.ui.View):
@@ -164,6 +288,111 @@ class VerificationQueueCog(commands.Cog):
         self.db = bot.db
         self.rate_limiter = RateLimiter()
         self.pending_requests = {}  # Temporary storage: user_id -> (email_hash, notes)
+
+    async def process_proof_submission(
+        self,
+        interaction: discord.Interaction,
+        claimed_email_hash: str | None,
+        attachment_urls: list[str]
+    ):
+        """
+        Process proof submission (URL-only). Keeps existing queue logic unchanged:
+        - Auto-grant Premium if email is in paid list
+        - Otherwise create verify_request and post to #verify-queue with approve/reject buttons
+        """
+        guild = interaction.guild
+        if not guild:
+            return
+
+        # Check if email is in paid subscribers list
+        if claimed_email_hash:
+            is_paid = await self.db.is_email_paid(claimed_email_hash)
+            if is_paid:
+                # Auto-grant Premium - email is in paid list!
+                premium_role = await self.get_role(guild, "premium")
+                if premium_role:
+                    member = guild.get_member(interaction.user.id)
+                    if member:
+                        try:
+                            await member.add_roles(premium_role, reason="Auto-approved: email in paid subscriber list")
+                            logger.info(f"Auto-granted premium to {member} via DM proof (email in paid list)")
+
+                            # Log to bot-logs
+                            log_channel = await self.get_channel(guild, "bot_logs")
+                            if log_channel:
+                                embed = discord.Embed(
+                                    title="✅ Premium Auto-Granted",
+                                    description=(
+                                        f"**User:** {member.mention} ({member})\n"
+                                        f"**Method:** DM proof with email in paid subscriber list\n"
+                                        f"**Email Hash:** {claimed_email_hash[:16]}..."
+                                    ),
+                                    color=discord.Color.green(),
+                                    timestamp=datetime.now(timezone.utc)
+                                )
+                                try:
+                                    await log_channel.send(embed=embed)
+                                except Exception:
+                                    pass
+
+                            try:
+                                await interaction.user.send(
+                                    "✅ **Premium access granted!** Your email is in our paid subscriber list, so you've been automatically approved.\n\n"
+                                    "**Your screenshot will only be visible to moderators.**"
+                                )
+                            except Exception:
+                                pass
+                            return
+                        except Exception as e:
+                            logger.error(f"Failed to auto-grant premium: {e}")
+                            # Fall through to mod queue if auto-grant fails
+
+        # Email not in paid list OR no email provided - go to mod queue
+        request_id = await self.db.create_verify_request(
+            interaction.user.id,
+            claimed_email_hash,
+            attachment_urls
+        )
+
+        # Record rate limit
+        self.rate_limiter.record_action(interaction.user.id, "verify_premium")
+
+        # Post to verify queue
+        queue_channel = await self.get_channel(guild, "verify_queue")
+        if queue_channel:
+            embed = discord.Embed(
+                title="💎 New Premium Verification Request",
+                description=f"**User:** {interaction.user.mention} ({interaction.user})\n**User ID:** {interaction.user.id}",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+
+            if claimed_email_hash:
+                is_paid = await self.db.is_email_paid(claimed_email_hash)
+                email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
+                embed.add_field(name="Email Status", value=email_status, inline=True)
+
+            if attachment_urls:
+                embed.add_field(
+                    name="Proof Attachments",
+                    value="\n".join([f"[Image {i+1}]({url})" for i, url in enumerate(attachment_urls[:5])]),
+                    inline=False
+                )
+                embed.set_image(url=attachment_urls[0])
+
+            embed.set_footer(text=f"Request ID: {request_id}")
+
+            view = VerifyQueueButtons(self.bot, request_id)
+            await queue_channel.send(embed=embed, view=view)
+
+        # DM user (avoid public channel)
+        try:
+            await interaction.user.send(
+                "✅ Your verification request has been submitted! A moderator will review it shortly.\n\n"
+                "**Your screenshot will only be visible to moderators.**"
+            )
+        except Exception:
+            pass
     
     async def get_role(self, guild: discord.Guild, role_type: str) -> discord.Role | None:
         """Get role by type or ID."""
@@ -264,15 +493,15 @@ class VerificationQueueCog(commands.Cog):
     
     @app_commands.command(name="submit_proof", description="Submit proof attachment for verification")
     async def submit_proof(self, interaction: discord.Interaction):
-        """Submit proof attachment."""
+        """Submit proof attachment (DM-based; screenshots are never public)."""
         await interaction.response.defer(ephemeral=True)
-        
+
         guild = interaction.guild
         if not guild:
             await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
             return
-        
-        # Check if in verify channel
+
+        # Check if in verify channel (keep restriction, but do NOT collect proof here)
         verify_channel = await self.get_channel(guild, "verify")
         if verify_channel and interaction.channel_id != verify_channel.id:
             await interaction.followup.send(
@@ -280,123 +509,22 @@ class VerificationQueueCog(commands.Cog):
                 ephemeral=True
             )
             return
-        
-        # Check for pending request
-        pending = await self.db.get_pending_verify_request(interaction.user.id)
-        if pending:
+
+        # Must have pending info from the modal
+        if interaction.user.id not in self.pending_requests:
             await interaction.followup.send(
-                "❌ You already have a pending verification request. Please wait for it to be reviewed.",
+                "❌ I don't see an active verification request. Please run `/verify_premium` first.\n\n"
+                "**Your screenshot will only be visible to moderators.**",
                 ephemeral=True
             )
             return
-        
-        # Look for recent messages with attachments
-        timeout_minutes = self.config.PROOF_TIMEOUT_MINUTES
-        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
-        
-        attachment_urls = []
-        async for message in verify_channel.history(limit=20, after=cutoff_time):
-            if message.author.id == interaction.user.id and message.attachments:
-                for attachment in message.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image/"):
-                        attachment_urls.append(attachment.url)
-        
-        if not attachment_urls:
-            await interaction.followup.send(
-                f"❌ No image attachments found in your recent messages. "
-                f"Please upload an image in {verify_channel.mention} and try again.",
-                ephemeral=True
-            )
-            return
-        
-        # Get email hash from pending request (stored from modal)
-        pending_info = self.pending_requests.pop(interaction.user.id, {})
-        claimed_email_hash = pending_info.get("email_hash")
-        
-        # Check if email is in paid subscribers list
-        if claimed_email_hash:
-            is_paid = await self.db.is_email_paid(claimed_email_hash)
-            
-            if is_paid:
-                # Auto-grant Premium - email is in paid list!
-                premium_role = await self.get_role(guild, "premium")
-                if premium_role:
-                    member = guild.get_member(interaction.user.id)
-                    if member:
-                        try:
-                            await member.add_roles(premium_role, reason="Auto-approved: email in paid subscriber list")
-                            logger.info(f"Auto-granted premium to {member} via verify_premium (email in paid list)")
-                            
-                            # Log to bot-logs
-                            log_channel = await self.get_channel(guild, "bot_logs")
-                            if log_channel:
-                                embed = discord.Embed(
-                                    title="✅ Premium Auto-Granted",
-                                    description=(
-                                        f"**User:** {member.mention} ({member})\n"
-                                        f"**Method:** `/verify_premium` with email in paid subscriber list\n"
-                                        f"**Email Hash:** {claimed_email_hash[:16]}..."
-                                    ),
-                                    color=discord.Color.green(),
-                                    timestamp=datetime.now(timezone.utc)
-                                )
-                                try:
-                                    await log_channel.send(embed=embed)
-                                except Exception:
-                                    pass
-                            
-                            await interaction.followup.send(
-                                "✅ **Premium access granted!** Your email is in our paid subscriber list, so you've been automatically approved.",
-                                ephemeral=True
-                            )
-                            return
-                        except Exception as e:
-                            logger.error(f"Failed to auto-grant premium: {e}")
-                            # Fall through to mod queue if auto-grant fails
-        
-        # Email not in paid list OR no email provided - go to mod queue
-        # Create verification request
-        request_id = await self.db.create_verify_request(
-            interaction.user.id,
-            claimed_email_hash,
-            attachment_urls
-        )
-        
-        # Record rate limit
-        self.rate_limiter.record_action(interaction.user.id, "verify_premium")
-        
-        # Post to verify queue
-        queue_channel = await self.get_channel(guild, "verify_queue")
-        if queue_channel:
-            embed = discord.Embed(
-                title="💎 New Premium Verification Request",
-                description=f"**User:** {interaction.user.mention} ({interaction.user})\n**User ID:** {interaction.user.id}",
-                color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            if claimed_email_hash:
-                # Check if email is in paid list (for mod reference)
-                is_paid = await self.db.is_email_paid(claimed_email_hash)
-                email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
-                embed.add_field(name="Email Status", value=email_status, inline=True)
-            
-            if attachment_urls:
-                embed.add_field(
-                    name="Proof Attachments",
-                    value="\n".join([f"[Image {i+1}]({url})" for i, url in enumerate(attachment_urls[:5])]),
-                    inline=False
-                )
-            
-            embed.set_footer(text=f"Request ID: {request_id}")
-            
-            view = VerifyQueueButtons(self.bot, request_id)
-            await queue_channel.send(embed=embed, view=view)
-        
+
+        view = UploadScreenshotDMView(self)
         await interaction.followup.send(
-            "✅ Your verification request has been submitted! A moderator will review it shortly.\n\n"
-            "**Note:** If your email is in our paid subscriber list, you would have been auto-approved. "
-            "Otherwise, please wait for manual review.",
+            "**Do not post screenshots in this channel.**\n"
+            "**Your screenshot will only be visible to moderators.**\n\n"
+            "Click the button below to receive a DM upload prompt.",
+            view=view,
             ephemeral=True
         )
     

@@ -11,6 +11,190 @@ from services.email_service import EmailService
 
 logger = logging.getLogger(__name__)
 
+def _attachment_is_image(attachment: discord.Attachment) -> bool:
+    """Return True if the attachment is an image (best-effort)."""
+    try:
+        if attachment.content_type and attachment.content_type.startswith("image/"):
+            return True
+    except Exception:
+        pass
+    name = (getattr(attachment, "filename", "") or "").lower()
+    return name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+
+
+class UploadScreenshotDMButton(discord.ui.Button):
+    """Collect proof via DM so screenshots are never public."""
+
+    def __init__(self, bot):
+        super().__init__(label="Upload Screenshot (DM)", style=discord.ButtonStyle.primary)
+        self.bot = bot
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+
+        if not interaction.guild:
+            await interaction.followup.send("❌ This can only be used in a server.", ephemeral=True)
+            return
+
+        # Block if user already has a pending verification request
+        pending = await self.bot.db.get_pending_verify_request(interaction.user.id)
+        if pending:
+            await interaction.followup.send("❌ You already have a pending verification request.", ephemeral=True)
+            return
+
+        # Pull pending metadata saved from the modal
+        verification_cog = self.bot.get_cog("VerificationQueueCog")
+        pending_info = {}
+        if verification_cog:
+            pending_info = verification_cog.pending_requests.pop(interaction.user.id, {})
+        claimed_email_hash = pending_info.get("email_hash")
+
+        # DM upload prompt
+        try:
+            dm = await interaction.user.create_dm()
+            await dm.send(
+                "🖼️ **Premium Access (Screenshot) – Upload**\n\n"
+                "Please reply to this DM with your Substack subscription screenshot attached.\n\n"
+                "**Important:** Do **not** post screenshots in the public `#verify` channel.\n"
+                "**Your screenshot will only be visible to moderators.**\n\n"
+                f"⏳ You have **{self.bot.config.PROOF_TIMEOUT_MINUTES} minutes** to upload."
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I couldn't DM you. Please enable DMs from this server and try again (or contact a moderator).",
+                ephemeral=True
+            )
+            # Put pending info back so they can retry
+            if verification_cog:
+                verification_cog.pending_requests[interaction.user.id] = pending_info
+            return
+
+        await interaction.followup.send(
+            "✅ Check your DMs for an upload prompt.\n\n**Your screenshot will only be visible to moderators.**",
+            ephemeral=True
+        )
+
+        timeout_seconds = int(self.bot.config.PROOF_TIMEOUT_MINUTES * 60)
+
+        def check(msg: discord.Message) -> bool:
+            if msg.author.id != interaction.user.id:
+                return False
+            if msg.channel.id != dm.id:
+                return False
+            if not msg.attachments:
+                return False
+            return any(_attachment_is_image(a) for a in msg.attachments)
+
+        try:
+            proof_msg: discord.Message = await self.bot.wait_for("message", timeout=timeout_seconds, check=check)
+        except Exception:
+            try:
+                await dm.send(
+                    "⏳ Upload timed out. Please go back to `#verify`, click **Premium Access (Screenshot)** again, and retry.\n\n"
+                    "**Your screenshot will only be visible to moderators.**"
+                )
+            except Exception:
+                pass
+            return
+
+        attachment_urls = [a.url for a in proof_msg.attachments if _attachment_is_image(a)]
+        if not attachment_urls:
+            try:
+                await dm.send("❌ I didn't detect an image attachment. Please try again.")
+            except Exception:
+                pass
+            return
+
+        # Create verification request (URL-only; no local storage)
+        try:
+            request_id = await self.bot.db.create_verify_request(
+                interaction.user.id,
+                claimed_email_hash,
+                attachment_urls
+            )
+        except Exception as e:
+            logger.error(f"Error creating verify request (DM flow): {e}", exc_info=True)
+            try:
+                await dm.send("❌ Error creating your verification request. Please try again later or contact a moderator.")
+            except Exception:
+                pass
+            return
+
+        # Record rate limit
+        if verification_cog:
+            verification_cog.rate_limiter.record_action(interaction.user.id, "verify_premium")
+
+        # Post to verify queue (mods/admins only)
+        admin_cog = self.bot.get_cog("AdminRolesCog")
+        queue_channel = await admin_cog.get_channel(interaction.guild, "verify_queue") if admin_cog else None
+
+        if not queue_channel:
+            logger.warning("verify_queue channel not found (DM flow)")
+            try:
+                await dm.send(
+                    "⚠️ Your verification request was created, but the moderator queue channel wasn't found. "
+                    "Please contact a moderator."
+                )
+            except Exception:
+                pass
+            return
+
+        try:
+            from cogs.verification_queue import VerifyQueueButtons
+
+            embed = discord.Embed(
+                title="💎 New Premium Verification Request",
+                description=f"**User:** {interaction.user.mention} ({interaction.user})\n**User ID:** {interaction.user.id}",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+
+            if claimed_email_hash:
+                is_paid = await self.bot.db.is_email_paid(claimed_email_hash)
+                email_status = "✅ In paid list" if is_paid else "❌ Not in paid list"
+                embed.add_field(name="Email Status", value=email_status, inline=True)
+
+            embed.add_field(
+                name="Proof Attachments",
+                value="\n".join([f"[Image {i+1}]({url})" for i, url in enumerate(attachment_urls[:5])]),
+                inline=False
+            )
+            embed.set_image(url=attachment_urls[0])
+            embed.set_footer(text=f"Request ID: {request_id}")
+
+            view = VerifyQueueButtons(self.bot, request_id)
+            await queue_channel.send(embed=embed, view=view)
+            logger.info(f"Posted verification request {request_id} to verify-queue (DM flow) for user {interaction.user.id}")
+        except Exception as e:
+            logger.error(f"Error posting to verify queue (DM flow): {e}", exc_info=True)
+            try:
+                await dm.send(
+                    "⚠️ Your verification request was created, but I couldn't post it to the moderator queue. "
+                    "Please contact a moderator."
+                )
+            except Exception:
+                pass
+            return
+
+        try:
+            await dm.send(
+                "✅ Your verification request has been submitted! A moderator will review it shortly.\n\n"
+                "**Your screenshot will only be visible to moderators.**"
+            )
+        except Exception:
+            pass
+
+
+class UploadScreenshotDMView(discord.ui.View):
+    """Ephemeral view that prompts DM-based upload."""
+
+    def __init__(self, bot):
+        super().__init__(timeout=600)
+        self.add_item(UploadScreenshotDMButton(bot))
+
 
 class FreeAccessButton(discord.ui.Button):
     """Free Access button with persistent custom_id."""
@@ -379,11 +563,13 @@ class PremiumScreenshotModal(discord.ui.Modal, title="Premium Access - Screensho
                 "notes": self.notes.value if self.notes.value else None
             }
         
-        # Show submit screenshot button
-        view = SubmitScreenshotView(bot, claimed_email_hash)
+        # Ephemeral instructions + DM upload prompt (screenshots must never be public)
+        view = UploadScreenshotDMView(bot)
         await interaction.followup.send(
-            f"✅ Request received! Please attach your proof image in your next message in this channel "
-            f"within {bot.config.PROOF_TIMEOUT_MINUTES} minutes, then click the button below.",
+            "✅ Request received!\n\n"
+            "**Do not post screenshots in this channel.**\n"
+            "**Your screenshot will only be visible to moderators.**\n\n"
+            "Click the button below to receive a DM upload prompt.",
             view=view,
             ephemeral=True
         )
@@ -625,6 +811,58 @@ class AccessPanelCog(commands.Cog):
         self.bot = bot
         self.config = bot.config
         self.db = bot.db
+
+    async def _is_mod_or_admin(self, member: discord.Member) -> bool:
+        """Best-effort check for mod/admin privileges."""
+        if member.guild_permissions.administrator or member.guild_permissions.manage_roles:
+            return True
+        admin_cog = self.bot.get_cog("AdminRolesCog")
+        if not admin_cog:
+            return False
+        admin_role = await admin_cog.get_role(member.guild, "admin")
+        mod_role = await admin_cog.get_role(member.guild, "mod")
+        if admin_role and admin_role in member.roles:
+            return True
+        if mod_role and mod_role in member.roles:
+            return True
+        return False
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Safety net: delete any screenshots accidentally posted in public #verify by non-mods."""
+        if message.author.bot or not message.guild:
+            return
+
+        try:
+            verify_channel = await self.get_channel(message.guild, "verify")
+            if not verify_channel or message.channel.id != verify_channel.id:
+                return
+
+            if not message.attachments:
+                return
+
+            if not any(_attachment_is_image(a) for a in message.attachments):
+                return
+
+            member = message.author if isinstance(message.author, discord.Member) else message.guild.get_member(message.author.id)
+            if isinstance(member, discord.Member) and await self._is_mod_or_admin(member):
+                return
+
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            try:
+                await message.author.send(
+                    f"Hi! I removed your screenshot from {verify_channel.mention} to protect your privacy.\n\n"
+                    "Please use the **Premium Access (Screenshot)** button in `#verify` and upload your screenshot via the DM prompt.\n\n"
+                    "**Your screenshot will only be visible to moderators.**"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Error in AccessPanelCog.on_message screenshot guard: {e}", exc_info=True)
     
     async def get_channel(self, guild: discord.Guild, channel_type: str) -> discord.TextChannel | None:
         """Get channel by type or ID."""
@@ -706,7 +944,8 @@ class AccessPanelCog(commands.Cog):
                     "Link your Substack email for automatic verification.\n"
                     "If your email is in our paid subscriber list, Premium will be granted immediately.\n\n"
                     "**🖼️ Premium Access (Screenshot)**\n"
-                    "Submit proof of your Substack subscription for manual review.\n\n"
+                    "Submit proof of your Substack subscription for manual review.\n"
+                    "**Your screenshot will only be visible to moderators.**\n\n"
                     "**⚠️ Important Disclaimer**\n"
                     "This bot and community do not provide financial advice. "
                     "All trading decisions are your own responsibility. "
