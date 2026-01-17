@@ -180,7 +180,8 @@ class CSVImportCog(commands.Cog):
                         f"**Sync Results:**\n"
                         f"• Granted Premium: {sync_stats['granted']}\n"
                         f"• Revoked Premium: {sync_stats['revoked']}\n"
-                        f"• Skipped: {sync_stats['skipped']}"
+                        f"• Unchanged: {sync_stats.get('unchanged', 0)}\n"
+                        f"• Skipped: {sync_stats['skipped']} ({sync_stats.get('skip_reasons', {})})"
                     ),
                     color=discord.Color.green(),
                     timestamp=datetime.now(timezone.utc)
@@ -203,12 +204,18 @@ class CSVImportCog(commands.Cog):
     async def sync_premium_roles(self, guild: discord.Guild) -> dict:
         """Sync Premium roles based on paid emails. Returns stats."""
         if not guild:
-            return {"granted": 0, "revoked": 0, "skipped": 0}
+            return {"granted": 0, "revoked": 0, "skipped": 0, "unchanged": 0, "skip_reasons": {}}
 
         premium_role = await self.get_role(guild, "premium")
         if not premium_role:
             logger.warning("Premium role not found")
-            return {"granted": 0, "revoked": 0, "skipped": 0}
+            return {
+                "granted": 0,
+                "revoked": 0,
+                "skipped": 0,
+                "unchanged": 0,
+                "skip_reasons": {"premium_role_missing": 1},
+            }
 
         paid_emails = await self.db.get_all_paid_emails()
         paid_set = set(paid_emails)
@@ -216,52 +223,97 @@ class CSVImportCog(commands.Cog):
         granted = 0
         revoked = 0
         skipped = 0
+        unchanged = 0
+        skip_reasons: dict[str, int] = {}
 
-        async def handle_user(user_id, email_hash):
-            nonlocal granted, revoked, skipped
-            if not email_hash:
-                skipped += 1
-                return
+        def bump(reason: str) -> None:
+            nonlocal skipped
+            skipped += 1
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+        async def resolve_member(user_id: int):
+            """Resolve a guild member even if not present in cache."""
             member = guild.get_member(user_id)
-            if not member:
-                skipped += 1
+            if member:
+                return member
+            try:
+                return await guild.fetch_member(user_id)
+            except discord.NotFound:
+                return None
+            except discord.Forbidden:
+                return None
+            except Exception:
+                return None
+
+        async def process_row(user_id: int, email_hash: str | None):
+            nonlocal granted, revoked, unchanged
+
+            if not email_hash:
+                bump("no_email_hash")
                 return
+
+            member = await resolve_member(int(user_id))
+            if not member:
+                bump("member_not_found")
+                return
+
             has_premium = premium_role in member.roles
             is_paid = email_hash in paid_set
+
             if is_paid and not has_premium:
                 try:
                     await member.add_roles(premium_role, reason="Sync: email in paid list")
                     granted += 1
                     logger.info(f"Synced: granted premium to {member}")
+                except discord.Forbidden:
+                    logger.error(f"Failed to grant premium to {member}: Forbidden (role hierarchy/permissions)")
+                    bump("grant_forbidden")
                 except Exception as e:
                     logger.error(f"Failed to grant premium to {member}: {e}")
-                    skipped += 1
-            elif not is_paid and has_premium and self.config.STRICT_REVOKE:
+                    bump("grant_error")
+                return
+
+            if (not is_paid) and has_premium and self.config.STRICT_REVOKE:
                 try:
                     await member.remove_roles(premium_role, reason="Sync: email not in paid list")
                     revoked += 1
                     logger.info(f"Synced: revoked premium from {member}")
+                except discord.Forbidden:
+                    logger.error(f"Failed to revoke premium from {member}: Forbidden (role hierarchy/permissions)")
+                    bump("revoke_forbidden")
                 except Exception as e:
                     logger.error(f"Failed to revoke premium from {member}: {e}")
-                    skipped += 1
-            else:
-                skipped += 1
+                    bump("revoke_error")
+                return
+
+            unchanged += 1
 
         # Get all users with verified emails
         if self.db.use_postgres:
             async with self.db.pool.acquire() as conn:
-                rows = await conn.fetch("SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE")
+                rows = await conn.fetch(
+                    "SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE"
+                )
                 for row in rows:
-                    await handle_user(row["discord_user_id"], row["email_hash"])
+                    await process_row(row["discord_user_id"], row["email_hash"])
         else:
             async with self.db.get_connection() as db:
-                cursor = await db.execute("SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE")
-                rows = await cursor.fetchall()
-                await cursor.close()
-                for row in rows:
-                    await handle_user(row["discord_user_id"], row["email_hash"])
+                async with db.execute(
+                    "SELECT discord_user_id, email_hash FROM users WHERE email_verified = TRUE"
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        await process_row(row["discord_user_id"], row["email_hash"])
 
-        return {"granted": granted, "revoked": revoked, "skipped": skipped}
+        return {
+            "granted": granted,
+            "revoked": revoked,
+            "skipped": skipped,
+            "unchanged": unchanged,
+            "skip_reasons": skip_reasons,
+        }
+
+
 
     @app_commands.command(name="sync_premium", description="Sync Premium roles with paid email list (Admin only)")
     async def sync_premium(self, interaction: discord.Interaction):
@@ -289,7 +341,8 @@ class CSVImportCog(commands.Cog):
                     f"**Results:**\n"
                     f"• Granted Premium: {stats['granted']}\n"
                     f"• Revoked Premium: {stats['revoked']}\n"
-                    f"• Skipped: {stats['skipped']}"
+                    f"• Unchanged: {stats.get('unchanged', 0)}\n"
+                    f"• Skipped: {stats['skipped']} ({stats.get('skip_reasons', {})})"
                 ),
                 color=discord.Color.blue(),
                 timestamp=datetime.now(timezone.utc)
@@ -300,7 +353,8 @@ class CSVImportCog(commands.Cog):
             f"✅ Sync complete!\n"
             f"• Granted Premium: {stats['granted']}\n"
             f"• Revoked Premium: {stats['revoked']}\n"
-            f"• Skipped: {stats['skipped']}",
+            f"• Unchanged: {stats.get('unchanged', 0)}\n"
+            f"• Skipped: {stats['skipped']} ({stats.get('skip_reasons', {})})",
             ephemeral=True
         )
     
