@@ -71,6 +71,36 @@ class EmailLinkingCog(commands.Cog):
             # Never break user flow because logging failed
             pass
 
+    async def _safe_ephemeral_send(self, interaction: discord.Interaction, content: str) -> bool:
+        """
+        Send an ephemeral response. If the bot cannot respond in-channel (permissions),
+        fall back to DMing the user and logging the failure.
+        """
+        try:
+            await interaction.followup.send(content, ephemeral=True)
+            return True
+        except discord.Forbidden:
+            # Can't send in channel; try DM fallback
+            try:
+                await interaction.user.send(content)
+            except Exception:
+                pass
+            if interaction.guild:
+                await self._log_to_bot_logs(
+                    interaction.guild,
+                    title="⚠️ Ephemeral Response Failed (Forbidden)",
+                    description=(
+                        f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                        f"**Command:** `{interaction.command.name if interaction.command else 'unknown'}`\n"
+                        f"**Result:** Missing channel permissions to respond; attempted DM fallback"
+                    ),
+                    color=discord.Color.orange(),
+                )
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send ephemeral response: {e}", exc_info=True)
+            return False
+
     def _as_utc_datetime(self, value) -> datetime | None:
         """Parse DB timestamps from either datetime or isoformat strings."""
         if value is None:
@@ -140,7 +170,7 @@ class EmailLinkingCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         ok, msg = self._ensure_guild_ok(interaction)
         if not ok:
-            await interaction.followup.send(msg, ephemeral=True)
+            await self._safe_ephemeral_send(interaction, msg)
             return
         
         if not self.email_service.enabled:
@@ -225,10 +255,10 @@ class EmailLinkingCog(commands.Cog):
                 color=discord.Color.green(),
             )
 
-            await interaction.followup.send(
+            await self._safe_ephemeral_send(
+                interaction,
                 "✅ Code sent. Run `/confirm_code <code> <email>` to verify.\n\n"
                 f"**Note:** The code expires in {self.config.OTP_EXPIRY_MINUTES} minutes.",
-                ephemeral=True,
             )
         except Exception as e:
             logger.error(f"Error in /link_email: {e}", exc_info=True)
@@ -242,9 +272,9 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-            await interaction.followup.send(
+            await self._safe_ephemeral_send(
+                interaction,
                 "❌ An unexpected error occurred while sending your code. Please try again or contact an administrator.",
-                ephemeral=True,
             )
     
     @app_commands.command(name="confirm_code", description="Confirm your email with the verification code")
@@ -254,12 +284,12 @@ class EmailLinkingCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         ok, msg = self._ensure_guild_ok(interaction)
         if not ok:
-            await interaction.followup.send(msg, ephemeral=True)
+            await self._safe_ephemeral_send(interaction, msg)
             return
         
         # Validate code format
         if not code.isdigit() or len(code) != 6:
-            await interaction.followup.send("❌ Invalid code format. Please enter a 6-digit number.", ephemeral=True)
+            await self._safe_ephemeral_send(interaction, "❌ Invalid code format. Please enter a 6-digit number.")
             return
         try:
             guild = interaction.guild
@@ -296,9 +326,9 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-                await interaction.followup.send(
+                await self._safe_ephemeral_send(
+                    interaction,
                     "❌ No active code found for that email. Please run `/link_email <email>` again to get a new code.",
-                    ephemeral=True,
                 )
                 return
 
@@ -333,9 +363,9 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-                await interaction.followup.send(
+                await self._safe_ephemeral_send(
+                    interaction,
                     "❌ Email address doesn't match the active code. Please use the same email you used with `/link_email`.",
-                    ephemeral=True,
                 )
                 return
 
@@ -354,9 +384,9 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.orange(),
                 )
-                await interaction.followup.send(
+                await self._safe_ephemeral_send(
+                    interaction,
                     "❌ Code has expired. Please request a new code with `/link_email <email>`.",
-                    ephemeral=True,
                 )
                 return
 
@@ -374,9 +404,9 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-                await interaction.followup.send(
+                await self._safe_ephemeral_send(
+                    interaction,
                     "❌ Too many failed attempts. Please request a new code with `/link_email <email>`.",
-                    ephemeral=True,
                 )
                 return
 
@@ -400,9 +430,9 @@ class EmailLinkingCog(commands.Cog):
                         ),
                         color=discord.Color.red(),
                     )
-                    await interaction.followup.send(
+                    await self._safe_ephemeral_send(
+                        interaction,
                         "❌ Incorrect code. You’ve reached the maximum attempts. Please run `/link_email <email>` to get a new code.",
-                        ephemeral=True,
                     )
                     return
 
@@ -417,10 +447,10 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.orange(),
                 )
-                await interaction.followup.send(
+                await self._safe_ephemeral_send(
+                    interaction,
                     f"❌ Incorrect code. Please try again. **Attempts remaining:** {remaining}\n\n"
                     "If you think the code expired, run `/link_email <email>` again.",
-                    ephemeral=True,
                 )
                 return
 
@@ -482,10 +512,10 @@ class EmailLinkingCog(commands.Cog):
                         ),
                         color=discord.Color.orange(),
                     )
-                    await interaction.followup.send(
+                    await self._safe_ephemeral_send(
+                        interaction,
                         "✅ Email verified.\n\n"
                         "⚠️ I couldn’t grant Premium automatically because the Premium role wasn’t found. Please contact an administrator.",
-                        ephemeral=True,
                     )
                     return
 
@@ -507,10 +537,10 @@ class EmailLinkingCog(commands.Cog):
                         ),
                         color=discord.Color.orange(),
                     )
-                    await interaction.followup.send(
+                    await self._safe_ephemeral_send(
+                        interaction,
                         "✅ Email verified ✅\n\n"
                         "⚠️ I couldn’t grant Premium automatically (couldn’t find your server member record). Please contact an administrator.",
-                        ephemeral=True,
                     )
                     return
 
@@ -528,10 +558,7 @@ class EmailLinkingCog(commands.Cog):
 
                 try:
                     if premium_role in member.roles:
-                        await interaction.followup.send(
-                            "✅ Email verified ✅ Premium granted",
-                            ephemeral=True,
-                        )
+                        await self._safe_ephemeral_send(interaction, "✅ Email verified ✅ Premium granted")
                         await self._log_to_bot_logs(
                             guild,
                             title="✅ Premium Already Present",
@@ -561,10 +588,7 @@ class EmailLinkingCog(commands.Cog):
                         ),
                         color=discord.Color.green(),
                     )
-                    await interaction.followup.send(
-                        "✅ Email verified ✅ Premium granted",
-                        ephemeral=True,
-                    )
+                    await self._safe_ephemeral_send(interaction, "✅ Email verified ✅ Premium granted")
                     return
                 except discord.Forbidden:
                     await self._log_to_bot_logs(
@@ -578,10 +602,10 @@ class EmailLinkingCog(commands.Cog):
                         ),
                         color=discord.Color.red(),
                     )
-                    await interaction.followup.send(
+                    await self._safe_ephemeral_send(
+                        interaction,
                         "✅ Email verified.\n\n"
                         "⚠️ Your email is paid, but I couldn’t grant Premium automatically due to server permissions/role hierarchy. Please contact an administrator.",
-                        ephemeral=True,
                     )
                     return
                 except Exception as e:
@@ -596,17 +620,17 @@ class EmailLinkingCog(commands.Cog):
                         color=discord.Color.red(),
                     )
                     logger.error(f"Failed to auto-grant premium: {e}", exc_info=True)
-                    await interaction.followup.send(
+                    await self._safe_ephemeral_send(
+                        interaction,
                         "✅ Email verified.\n\n"
                         "⚠️ Your email is paid, but an error occurred while granting Premium automatically. Please contact an administrator.",
-                        ephemeral=True,
                     )
                     return
 
             # Not paid
-            await interaction.followup.send(
+            await self._safe_ephemeral_send(
+                interaction,
                 "✅ Email verified ✅ Premium will be granted after next subscriber sync",
-                ephemeral=True,
             )
             await self._log_to_bot_logs(
                 guild,
@@ -631,9 +655,9 @@ class EmailLinkingCog(commands.Cog):
                     ),
                     color=discord.Color.red(),
                 )
-            await interaction.followup.send(
+            await self._safe_ephemeral_send(
+                interaction,
                 "❌ An unexpected error occurred while confirming your code. Please try again or contact an administrator.",
-                ephemeral=True,
             )
 
     @app_commands.command(name="otp_debug", description="Debug email OTP state for a user (Admin only)")
