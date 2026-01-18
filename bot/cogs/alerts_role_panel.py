@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 PANEL_CUSTOM_ID_OPTIN = "alerts_role_panel:optin"
 PANEL_CUSTOM_ID_OPTOUT = "alerts_role_panel:optout"
-PANEL_CUSTOM_ID_STATUS = "alerts_role_panel:status"
 
 
 async def _log_to_bot_logs(bot, guild: discord.Guild, title: str, description: str, color: discord.Color) -> None:
@@ -170,10 +169,6 @@ class AlertsRolePanelView(discord.ui.View):
     @discord.ui.button(label="🔕 Opt-out of Alerts", style=discord.ButtonStyle.secondary, custom_id=PANEL_CUSTOM_ID_OPTOUT)
     async def optout(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_role_change(interaction, "optout")
-
-    @discord.ui.button(label="🔄 Check status", style=discord.ButtonStyle.primary, custom_id=PANEL_CUSTOM_ID_STATUS)
-    async def status(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_role_change(interaction, "status")
 
 
 class AlertsRolePanelCog(commands.Cog):
