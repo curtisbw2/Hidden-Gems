@@ -224,8 +224,16 @@ class AlertsRolePanelCog(commands.Cog):
     async def _resolve_panel_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
         cid = getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_ID", None)
         if cid:
-            ch = guild.get_channel(int(cid))
-            return ch if isinstance(ch, discord.TextChannel) else None
+            try:
+                ch = guild.get_channel(int(cid))
+            except Exception:
+                ch = None
+            # Must be messageable (TextChannel/AnnouncementChannel are TextChannel in discord.py)
+            if ch is not None and hasattr(ch, "send") and isinstance(ch, discord.abc.GuildChannel):
+                if isinstance(ch, discord.TextChannel):
+                    return ch
+                # Not a text channel (could be category/forum/etc.)
+                return None
 
         name = (getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_NAME", None) or "").strip()
         if name:
@@ -325,10 +333,41 @@ class AlertsRolePanelCog(commands.Cog):
             await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
             return
 
+        cfg_id = getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_ID", None)
+        cfg_name = getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_NAME", None)
         panel_channel = await self._resolve_panel_channel(guild)
         if not panel_channel:
+            extra = ""
+            if cfg_id:
+                try:
+                    raw = guild.get_channel(int(cfg_id))
+                except Exception:
+                    raw = None
+                if raw is None:
+                    extra = f"\nConfigured `ALERTS_ROLE_PANEL_CHANNEL_ID={cfg_id}` but no channel with that ID exists in this guild."
+                else:
+                    extra = (
+                        f"\nConfigured `ALERTS_ROLE_PANEL_CHANNEL_ID={cfg_id}` but it is a `{type(raw).__name__}` "
+                        "and I can only post the panel to a text channel."
+                    )
+            else:
+                extra = f"\nConfigured channel name fallback: `{cfg_name or 'alerts-settings'}`"
+
+            await self._log(
+                guild,
+                title="❌ Alerts Role Panel: Panel Channel Not Found",
+                description=(
+                    f"**Configured ID:** `{cfg_id}`\n"
+                    f"**Configured Name:** `{cfg_name}`\n"
+                    f"**Invoked In:** <#{interaction.channel_id}> (`{interaction.channel_id}`)\n"
+                    f"**Guild:** `{guild.id}`"
+                ),
+                color=discord.Color.red(),
+            )
+
             await interaction.followup.send(
-                "❌ Panel channel not found. Create `#alerts-settings` (default) or set `ALERTS_ROLE_PANEL_CHANNEL_ID`.",
+                "❌ Panel channel not found. Set `ALERTS_ROLE_PANEL_CHANNEL_ID` to a **text channel** ID."
+                + extra,
                 ephemeral=True,
             )
             return
