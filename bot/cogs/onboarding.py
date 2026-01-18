@@ -174,36 +174,6 @@ class OnboardingCog(commands.Cog):
         
         return None
     
-    async def send_welcome_dm(self, member: discord.Member) -> bool:
-        """Send welcome DM to new member. Returns True if successful."""
-        try:
-            embed = discord.Embed(
-                title="💎 Welcome to Hidden Gems Research – The Gem Vault!",
-                description=(
-                    "Welcome to our options trading community!\n\n"
-                    "**Getting Started:**\n"
-                    "1. Read the server rules\n"
-                    "2. You have **Free Member** access\n"
-                    "3. To upgrade to **Premium Member**:\n"
-                    "   • Use `/verify_premium` in #verify (requires screenshot)\n"
-                    "   • Or use `/link_email` + `/confirm_code` (no screenshot)\n\n"
-                    "**Important:** This bot and community do not provide financial advice. "
-                    "All trading decisions are your own responsibility.\n\n"
-                    "Use `/start` in the server for an interactive guide!"
-                ),
-                color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            await member.send(embed=embed)
-            return True
-        except discord.Forbidden:
-            logger.warning(f"Could not DM {member}: DMs disabled")
-            return False
-        except Exception as e:
-            logger.error(f"Error sending welcome DM to {member}: {e}")
-            return False
-    
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Handle new member join."""
@@ -221,21 +191,6 @@ class OnboardingCog(commands.Cog):
                     logger.info(f"Auto-assigned free role to {member}")
                 except Exception as e:
                     logger.error(f"Failed to auto-assign free role to {member}: {e}")
-        
-        # Send welcome DM
-        dm_sent = await self.send_welcome_dm(member)
-        
-        # If DM failed, try fallback channel
-        if not dm_sent and self.config.CHANNEL_FALLBACK_DM:
-            fallback_channel = guild.get_channel(self.config.CHANNEL_FALLBACK_DM)
-            if fallback_channel and isinstance(fallback_channel, discord.TextChannel):
-                try:
-                    await fallback_channel.send(
-                        f"{member.mention} Welcome! Check your DMs for onboarding instructions. "
-                        "If you didn't receive a DM, use `/start` for a guide."
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send fallback message: {e}")
     
     @app_commands.command(name="start", description="Get started with Hidden Gems Research")
     async def start(self, interaction: discord.Interaction):
