@@ -199,6 +199,16 @@ class Database:
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         """)
+
+        # Alerts role panel tracking table (self-serve opt-in/out)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS alerts_role_panel (
+                guild_id BIGINT PRIMARY KEY,
+                channel_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
         
         # Substack tracking table
         await conn.execute("""
@@ -354,6 +364,16 @@ class Database:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS access_panel (
                 guild_id INTEGER PRIMARY KEY,
+                message_id INTEGER NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Alerts role panel tracking table (self-serve opt-in/out)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS alerts_role_panel (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
                 message_id INTEGER NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -1284,3 +1304,47 @@ class Database:
     async def update_access_panel_message_id(self, guild_id: int, message_id: int) -> None:
         """Update access panel message ID for guild."""
         await self.set_access_panel_message_id(guild_id, message_id)
+
+    # Alerts role panel operations
+    async def get_alerts_role_panel(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Get alerts role panel info for guild."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT guild_id, channel_id, message_id FROM alerts_role_panel WHERE guild_id = $1",
+                    guild_id,
+                )
+                return dict(row) if row else None
+        else:
+            async with self.get_connection() as db:
+                async with db.execute(
+                    "SELECT guild_id, channel_id, message_id FROM alerts_role_panel WHERE guild_id = ?",
+                    (guild_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return dict(row) if row else None
+
+    async def set_alerts_role_panel(self, guild_id: int, channel_id: int, message_id: int) -> None:
+        """Set alerts role panel message/channel for guild."""
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO alerts_role_panel (guild_id, channel_id, message_id, updated_at)
+                    VALUES ($1, $2, $3, NOW())
+                    ON CONFLICT (guild_id)
+                    DO UPDATE SET channel_id = $2, message_id = $3, updated_at = NOW()
+                    """,
+                    guild_id,
+                    channel_id,
+                    message_id,
+                )
+        else:
+            async with self.get_connection() as db:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO alerts_role_panel (guild_id, channel_id, message_id, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (guild_id, channel_id, message_id),
+                )

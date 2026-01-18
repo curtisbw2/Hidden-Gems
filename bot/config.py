@@ -76,6 +76,10 @@ class Config:
     # Alerts Role (for @mention in #alerts)
     ALERTS_ROLE_ID: Optional[int] = None
     ALERTS_ROLE_NAME: str = "Alerts"
+
+    # Alerts Role Panel (self-serve opt-in/out)
+    ALERTS_ROLE_PANEL_CHANNEL_ID: Optional[int] = None
+    ALERTS_ROLE_PANEL_CHANNEL_NAME: str = "alerts-settings"
     
     # Substack RSS Monitoring
     SUBSTACK_RSS_URL: Optional[str] = None  # e.g., "https://yourpublication.substack.com/feed"
@@ -172,6 +176,9 @@ class Config:
 
             ALERTS_ROLE_ID=get_int("ALERTS_ROLE_ID"),
             ALERTS_ROLE_NAME=get_str("ALERTS_ROLE_NAME", "Alerts"),
+
+            ALERTS_ROLE_PANEL_CHANNEL_ID=get_int("ALERTS_ROLE_PANEL_CHANNEL_ID"),
+            ALERTS_ROLE_PANEL_CHANNEL_NAME=get_str("ALERTS_ROLE_PANEL_CHANNEL_NAME", "alerts-settings"),
             
             SUBSTACK_RSS_URL=os.getenv("SUBSTACK_RSS_URL"),
             SUBSTACK_CHECK_INTERVAL_MINUTES=get_int("SUBSTACK_CHECK_INTERVAL_MINUTES", 15),

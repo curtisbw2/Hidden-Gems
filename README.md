@@ -195,6 +195,7 @@ The bot can run on any platform that supports Python:
 ### User Commands
 
 - `/start` - Interactive onboarding guide
+- `/alerts_toggle` - Opt in/out of alert pings (toggles the `Alerts` role)
 - `/verify_premium` - Request Premium via mod queue (use in #verify)
 - `/submit_proof` - Submit proof attachment after `/verify_premium`
 - `/link_email <email>` - Link Substack email (sends OTP)
@@ -209,6 +210,7 @@ The bot can run on any platform that supports Python:
 - `/revoke_free <user>` - Revoke Free role
 - `/whois <user>` - Get user information
 - `/post_access_panel` - Post or update the Access Panel in #verify (Admin only)
+- `/post_alerts_role_panel` - Post or update the Alerts role opt-in panel (Admin only)
 - `/import_paid_csv <file>` - Import paid subscribers from CSV (Admin only)
 - `/sync_premium` - Sync Premium roles with paid email list (Admin only)
 - `/audit_premium` - Remove Premium from users not in paid list (Admin only)
@@ -284,6 +286,28 @@ All configuration is done via environment variables. See `.env.example` for all 
 - `ALERT_THRESHOLD_PERCENT` - Alert threshold (default: 10.0%)
 - `ALERT_TICKERS` - Comma-separated ticker list
 - `ALERT_CHECK_INTERVAL_MINUTES` - Optional: check every N minutes instead of scheduled time
+- `ALERTS_ROLE_ID` - Alerts role ID (preferred; used for @mentions and opt-in/out)
+- `ALERTS_ROLE_NAME` - Alerts role name fallback (default: "Alerts")
+- `ALERTS_ROLE_PANEL_CHANNEL_ID` - Channel to post the opt-in panel (recommended)
+- `ALERTS_ROLE_PANEL_CHANNEL_NAME` - Channel name fallback (default: "alerts-settings")
+
+### Alerts Role (Opt-In/Out)
+
+To let users self-serve alert pings:
+
+- **Create a role** named `Alerts`
+- **Mark it mentionable** (Server Settings → Roles → `Alerts` → “Allow anyone to @mention this role”)
+- **Ensure bot role is above `Alerts`** in the role hierarchy and bot has **Manage Roles**
+- (Recommended) Create a channel like `#alerts-settings` and set `ALERTS_ROLE_PANEL_CHANNEL_ID`
+
+Then run:
+
+- `/post_alerts_role_panel` in the configured panel channel (admin only)
+
+Users can:
+
+- Click the panel buttons to opt in/out, or
+- Run `/alerts_toggle` to toggle their Alerts role
 
 ## Security & Privacy
 
