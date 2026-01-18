@@ -40,33 +40,10 @@ class AlertsRolePanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-    async def _get_panel_channel_id(self, guild: discord.Guild) -> Optional[int]:
-        cfg = getattr(self.bot, "config", None)
-        if not cfg:
-            return None
-
-        channel_id = getattr(cfg, "ALERTS_ROLE_PANEL_CHANNEL_ID", None)
-        if channel_id:
-            return int(channel_id)
-
-        channel_name = (getattr(cfg, "ALERTS_ROLE_PANEL_CHANNEL_NAME", None) or "").strip()
-        if channel_name:
-            ch = discord.utils.get(guild.text_channels, name=channel_name)
-            return ch.id if ch else None
-        return None
-
     async def _enforce_panel_channel(self, interaction: discord.Interaction) -> bool:
-        """Optional strictness: require button interactions happen in configured panel channel."""
+        """Allow button interactions in any channel (panel can be posted anywhere)."""
         if not interaction.guild:
             await interaction.response.send_message("❌ This can only be used in a server.", ephemeral=True)
-            return False
-
-        panel_channel_id = await self._get_panel_channel_id(interaction.guild)
-        if panel_channel_id and interaction.channel_id != panel_channel_id:
-            await interaction.response.send_message(
-                f"❌ Please use this in <#{panel_channel_id}>.",
-                ephemeral=True,
-            )
             return False
         return True
 
@@ -221,24 +198,10 @@ class AlertsRolePanelCog(commands.Cog):
             role = next((r for r in guild.roles if r.name.casefold() == rn), None)
         return role
 
-    async def _resolve_panel_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
-        cid = getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_ID", None)
-        if cid:
-            try:
-                ch = guild.get_channel(int(cid))
-            except Exception:
-                ch = None
-            # Must be messageable (TextChannel/AnnouncementChannel are TextChannel in discord.py)
-            if ch is not None and hasattr(ch, "send") and isinstance(ch, discord.abc.GuildChannel):
-                if isinstance(ch, discord.TextChannel):
-                    return ch
-                # Not a text channel (could be category/forum/etc.)
-                return None
-
-        name = (getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_NAME", None) or "").strip()
-        if name:
-            return discord.utils.get(guild.text_channels, name=name)
-        return None
+    async def _resolve_invocation_channel(self, interaction: discord.Interaction) -> Optional[discord.TextChannel]:
+        """Use the channel where the command was invoked (panel can be posted anywhere)."""
+        ch = interaction.channel
+        return ch if isinstance(ch, discord.TextChannel) else None
 
     async def _log(self, guild: discord.Guild, title: str, description: str, color: discord.Color) -> None:
         await _log_to_bot_logs(self.bot, guild, title, description, color)
@@ -333,49 +296,10 @@ class AlertsRolePanelCog(commands.Cog):
             await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
             return
 
-        cfg_id = getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_ID", None)
-        cfg_name = getattr(self.config, "ALERTS_ROLE_PANEL_CHANNEL_NAME", None)
-        panel_channel = await self._resolve_panel_channel(guild)
+        panel_channel = await self._resolve_invocation_channel(interaction)
         if not panel_channel:
-            extra = ""
-            if cfg_id:
-                try:
-                    raw = guild.get_channel(int(cfg_id))
-                except Exception:
-                    raw = None
-                if raw is None:
-                    extra = f"\nConfigured `ALERTS_ROLE_PANEL_CHANNEL_ID={cfg_id}` but no channel with that ID exists in this guild."
-                else:
-                    extra = (
-                        f"\nConfigured `ALERTS_ROLE_PANEL_CHANNEL_ID={cfg_id}` but it is a `{type(raw).__name__}` "
-                        "and I can only post the panel to a text channel."
-                    )
-            else:
-                extra = f"\nConfigured channel name fallback: `{cfg_name or 'alerts-settings'}`"
-
-            await self._log(
-                guild,
-                title="❌ Alerts Role Panel: Panel Channel Not Found",
-                description=(
-                    f"**Configured ID:** `{cfg_id}`\n"
-                    f"**Configured Name:** `{cfg_name}`\n"
-                    f"**Invoked In:** <#{interaction.channel_id}> (`{interaction.channel_id}`)\n"
-                    f"**Guild:** `{guild.id}`"
-                ),
-                color=discord.Color.red(),
-            )
-
             await interaction.followup.send(
-                "❌ Panel channel not found. Set `ALERTS_ROLE_PANEL_CHANNEL_ID` to a **text channel** ID."
-                + extra,
-                ephemeral=True,
-            )
-            return
-
-        # Restrict posting location (must run in configured channel)
-        if interaction.channel_id != panel_channel.id:
-            await interaction.followup.send(
-                f"❌ Please run this command in {panel_channel.mention}.",
+                "❌ I can only post the panel in a text channel.",
                 ephemeral=True,
             )
             return
@@ -413,6 +337,7 @@ class AlertsRolePanelCog(commands.Cog):
         except Exception:
             existing = None
 
+        # If the last saved panel is in THIS channel, refresh it; otherwise post a new panel here.
         if existing and existing.get("message_id") and int(existing.get("channel_id", 0)) == panel_channel.id:
             try:
                 msg = await panel_channel.fetch_message(int(existing["message_id"]))
@@ -439,6 +364,16 @@ class AlertsRolePanelCog(commands.Cog):
                 return
             except Exception as e:
                 logger.warning(f"Failed to edit existing alerts role panel: {e}")
+
+        # Best-effort: if we have a saved panel in a different channel, try to delete it to avoid duplicates.
+        if existing and existing.get("message_id") and existing.get("channel_id") and int(existing.get("channel_id", 0)) != panel_channel.id:
+            try:
+                old_channel = guild.get_channel(int(existing["channel_id"]))
+                if isinstance(old_channel, discord.TextChannel):
+                    old_msg = await old_channel.fetch_message(int(existing["message_id"]))
+                    await old_msg.delete()
+            except Exception:
+                pass
 
         # Post new panel
         try:

@@ -302,7 +302,7 @@ To let users self-serve alert pings:
 
 Then run:
 
-- `/post_alerts_role_panel` in the configured panel channel (admin only)
+- `/post_alerts_role_panel` in **any text channel** (admin only). The panel will be posted where you run it.
 
 Users can:
 
