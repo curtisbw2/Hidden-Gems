@@ -223,7 +223,7 @@ class UploadScreenshotDMButton(discord.ui.Button):
             embed.set_footer(text=f"Request ID: {request_id}")
 
             view = VerifyQueueButtons(self.bot, request_id)
-            await queue_channel.send(embed=embed, view=view)
+            await queue_channel.send(f"<@&1457812443509035202>", embed=embed, view=view)
             logger.info(f"Posted verification request {request_id} to verify-queue (DM flow) for user {interaction.user.id}")
         except Exception as e:
             logger.error(f"Error posting to verify queue (DM flow): {e}", exc_info=True)
@@ -903,7 +903,7 @@ class SubmitScreenshotButton(discord.ui.Button):
                         embed.set_footer(text=f"Request ID: {request_id}")
                         
                         view = VerifyQueueButtons(bot, request_id)
-                        await queue_channel.send(embed=embed, view=view)
+                        await queue_channel.send(f"<@&1457812443509035202>", embed=embed, view=view)
                         logger.info(f"Posted verification request {request_id} to verify-queue for user {interaction.user.id}")
                     except Exception as e:
                         logger.error(f"Error posting to verify queue: {e}", exc_info=True)

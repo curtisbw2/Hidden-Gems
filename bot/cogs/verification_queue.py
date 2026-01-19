@@ -383,7 +383,7 @@ class VerificationQueueCog(commands.Cog):
             embed.set_footer(text=f"Request ID: {request_id}")
 
             view = VerifyQueueButtons(self.bot, request_id)
-            await queue_channel.send(embed=embed, view=view)
+            await queue_channel.send(f"<@&1457812443509035202>", embed=embed, view=view)
 
         # DM user (avoid public channel)
         try:
