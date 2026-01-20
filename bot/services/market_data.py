@@ -30,10 +30,10 @@ class MarketDataProvider(ABC):
         """
         pass
 
-    async def get_today_rth_open(self, ticker: str, trading_date: Optional[date] = None) -> Optional[float]:
+    async def get_prev_rth_close(self, ticker: str, trading_date: Optional[date] = None) -> Optional[float]:
         """
-        Get today's RTH open price (daily bar Open) for a specific trading date (ET date).
-        Providers may ignore trading_date and return the most recent daily open.
+        Get previous trading day's RTH close price (daily bar Close) relative to a specific trading date (ET date).
+        Providers may ignore trading_date and return the most recent previous close available.
         """
         raise NotImplementedError
 
@@ -88,9 +88,12 @@ class YahooFinanceProvider(MarketDataProvider):
                     "percent_change": float(percent_change),
                 }
 
-            result = await asyncio.to_thread(fetch)
+            result = await asyncio.wait_for(asyncio.to_thread(fetch), timeout=15.0)
             return result
 
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout fetching quote for {ticker}")
+            return None
         except Exception as e:
             logger.error(f"Failed to fetch quote for {ticker}: {e}")
             return None
@@ -135,15 +138,18 @@ class YahooFinanceProvider(MarketDataProvider):
                 bars.reverse()
                 return bars[:days] if len(bars) > days else bars
 
-            result = await asyncio.to_thread(fetch)
+            result = await asyncio.wait_for(asyncio.to_thread(fetch), timeout=30.0)
             return result
 
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout fetching daily bars for {ticker}")
+            return None
         except Exception as e:
             logger.error(f"Failed to fetch daily bars for {ticker}: {e}")
             return None
 
-    async def get_today_rth_open(self, ticker: str, trading_date: Optional[date] = None) -> Optional[float]:
-        """Get today's RTH open (daily bar Open) using yfinance daily history."""
+    async def get_prev_rth_close(self, ticker: str, trading_date: Optional[date] = None) -> Optional[float]:
+        """Get previous trading day's RTH close (daily bar Close) using yfinance daily history."""
         if not self.yf:
             return None
 
@@ -158,18 +164,28 @@ class YahooFinanceProvider(MarketDataProvider):
                 hist = stock.history(period="7d", interval="1d", auto_adjust=False)
                 if hist is None or getattr(hist, "empty", True):
                     return None
+                # Find most recent day strictly before target_date
+                best_d: Optional[date] = None
+                best_close: Optional[float] = None
                 for idx, row in hist.iterrows():
                     d = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx).split()[0])
-                    if d == target_date:
-                        try:
-                            return float(row["Open"])
-                        except Exception:
-                            return None
-                return None
+                    if d >= target_date:
+                        continue
+                    try:
+                        c = float(row["Close"])
+                    except Exception:
+                        continue
+                    if best_d is None or d > best_d:
+                        best_d = d
+                        best_close = c
+                return best_close
 
-            return await asyncio.to_thread(fetch)
+            return await asyncio.wait_for(asyncio.to_thread(fetch), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout fetching previous close for {ticker}")
+            return None
         except Exception as e:
-            logger.error(f"Failed to fetch today's open for {ticker}: {e}")
+            logger.error(f"Failed to fetch previous close for {ticker}: {e}")
             return None
 
     async def get_latest_rth_price_1m(
@@ -221,7 +237,10 @@ class YahooFinanceProvider(MarketDataProvider):
                 as_of = last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
                 return last_close, as_of
 
-            return await asyncio.to_thread(fetch)
+            return await asyncio.wait_for(asyncio.to_thread(fetch), timeout=20.0)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout fetching latest 1m RTH price for {ticker}")
+            return None
         except Exception as e:
             logger.error(f"Failed to fetch latest 1m RTH price for {ticker}: {e}")
             return None

@@ -66,6 +66,7 @@ class Config:
     ALERT_CHECK_INTERVAL_MINUTES: Optional[int] = None  # If set, check every N minutes but only alert once per day
     ALERT_THRESHOLD_PERCENT: float = 10.0
     ALERT_TICKERS: str = "RR,ONDS,ACHR,UMAC,AMPX,LPTH"
+    ENABLE_DAILY_ALERTS: bool = True
 
     # Intraday Alerts (RTH only)
     ENABLE_INTRADAY_ALERTS: bool = False
@@ -168,6 +169,7 @@ class Config:
             ALERT_CHECK_INTERVAL_MINUTES=get_int("ALERT_CHECK_INTERVAL_MINUTES"),
             ALERT_THRESHOLD_PERCENT=get_float("ALERT_THRESHOLD_PERCENT", 10.0),
             ALERT_TICKERS=os.getenv("ALERT_TICKERS", "RR,ONDS,ACHR,UMAC,AMPX,LPTH"),
+            ENABLE_DAILY_ALERTS=get_bool("ENABLE_DAILY_ALERTS", True),
 
             ENABLE_INTRADAY_ALERTS=get_bool("ENABLE_INTRADAY_ALERTS", False),
             INTRADAY_POLL_SECONDS=get_int("INTRADAY_POLL_SECONDS", 60) or 60,

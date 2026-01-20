@@ -158,6 +158,8 @@ class Database:
                 last_price DOUBLE PRECISION,
                 last_pct DOUBLE PRECISION,
                 last_zone VARCHAR(10) DEFAULT '0',
+                alerted_5 BOOLEAN DEFAULT FALSE,
+                alerted_10 BOOLEAN DEFAULT FALSE,
                 last_alert_at TIMESTAMP WITH TIME ZONE,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 PRIMARY KEY (ticker, trading_date)
@@ -243,6 +245,10 @@ class Database:
         # otp_codes
         await conn.execute("ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0")
         await conn.execute("ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()")
+
+        # intraday_state
+        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_5 BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_10 BOOLEAN DEFAULT FALSE")
     
     async def _create_schema_sqlite(self, db: aiosqlite.Connection):
         """Create SQLite database schema."""
@@ -327,6 +333,8 @@ class Database:
                 last_price REAL,
                 last_pct REAL,
                 last_zone TEXT DEFAULT '0',
+                alerted_5 INTEGER DEFAULT 0,
+                alerted_10 INTEGER DEFAULT 0,
                 last_alert_at TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (ticker, trading_date)
@@ -425,6 +433,13 @@ class Database:
             await db.execute("ALTER TABLE otp_codes ADD COLUMN attempts INTEGER DEFAULT 0")
         if "created_at" not in otp_cols:
             await db.execute("ALTER TABLE otp_codes ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+        # intraday_state
+        intraday_cols = await _columns("intraday_state")
+        if "alerted_5" not in intraday_cols:
+            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_5 INTEGER DEFAULT 0")
+        if "alerted_10" not in intraday_cols:
+            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_10 INTEGER DEFAULT 0")
     
     @asynccontextmanager
     async def get_connection(self):
@@ -1069,6 +1084,8 @@ class Database:
         last_price: Optional[float],
         last_pct: Optional[float],
         last_zone: str,
+        alerted_5: bool = False,
+        alerted_10: bool = False,
         last_alert_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
     ) -> None:
@@ -1093,17 +1110,19 @@ class Database:
                 await conn.execute(
                     """
                     INSERT INTO intraday_state
-                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, alerted_5, alerted_10, last_alert_at, updated_at)
                     VALUES
-                        ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     ON CONFLICT (ticker, trading_date)
                     DO UPDATE SET
                         open_price = COALESCE($3, intraday_state.open_price),
                         last_price = $4,
                         last_pct = $5,
                         last_zone = $6,
-                        last_alert_at = $7,
-                        updated_at = $8
+                        alerted_5 = $7,
+                        alerted_10 = $8,
+                        last_alert_at = $9,
+                        updated_at = $10
                     """,
                     ticker,
                     self._pg_trading_date(trading_date),
@@ -1111,6 +1130,8 @@ class Database:
                     last_price,
                     last_pct,
                     last_zone,
+                    bool(alerted_5),
+                    bool(alerted_10),
                     last_alert_at,
                     updated_at,
                 )
@@ -1119,8 +1140,8 @@ class Database:
                 await db.execute(
                     """
                     INSERT OR REPLACE INTO intraday_state
-                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, alerted_5, alerted_10, last_alert_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ticker,
@@ -1129,6 +1150,8 @@ class Database:
                         last_price,
                         last_pct,
                         last_zone,
+                        1 if alerted_5 else 0,
+                        1 if alerted_10 else 0,
                         sqlite_last_alert_at,
                         sqlite_updated_at,
                     ),
