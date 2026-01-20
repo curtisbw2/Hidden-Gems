@@ -503,12 +503,17 @@ class AlertsCog(commands.Cog):
         embed.add_field(name="Date", value=as_of_et.astimezone(ET).date().isoformat(), inline=True)
         embed.add_field(name="As of", value=as_of_et.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"), inline=True)
 
-        mention = self._alerts_role_mention(guild)
-        await channel.send(
-            content=mention,
-            embed=embed,
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
+        mention_enabled = bool(getattr(self.config, "ALERTS_MENTION_ENABLED", False))
+        if mention_enabled:
+            mention = self._alerts_role_mention(guild)
+            await channel.send(
+                content=mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+        else:
+            # No role ping while testing / when disabled
+            await channel.send(embed=embed)
 
     @tasks.loop(seconds=60.0)
     async def intraday_task(self):

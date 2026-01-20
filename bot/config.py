@@ -77,6 +77,7 @@ class Config:
     # Alerts Role (for @mention in #alerts)
     ALERTS_ROLE_ID: Optional[int] = None
     ALERTS_ROLE_NAME: str = "Alerts"
+    ALERTS_MENTION_ENABLED: bool = False
 
     # Alerts Role Panel (self-serve opt-in/out)
     ALERTS_ROLE_PANEL_CHANNEL_ID: Optional[int] = None
@@ -178,6 +179,7 @@ class Config:
 
             ALERTS_ROLE_ID=get_int("ALERTS_ROLE_ID"),
             ALERTS_ROLE_NAME=get_str("ALERTS_ROLE_NAME", "Alerts"),
+            ALERTS_MENTION_ENABLED=get_bool("ALERTS_MENTION_ENABLED", False),
 
             ALERTS_ROLE_PANEL_CHANNEL_ID=get_int("ALERTS_ROLE_PANEL_CHANNEL_ID"),
             ALERTS_ROLE_PANEL_CHANNEL_NAME=get_str("ALERTS_ROLE_PANEL_CHANNEL_NAME", "alerts-settings"),
