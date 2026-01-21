@@ -485,7 +485,7 @@ class AlertsCog(commands.Cog):
         prev_close: float,
         current_price: float,
         pct_from_prev_close: float,
-        threshold: float,
+        zone: str,
         as_of_et: datetime,
     ) -> None:
         """Send intraday alert embed and mention Alerts role."""
@@ -493,7 +493,7 @@ class AlertsCog(commands.Cog):
         color = discord.Color.green() if is_positive else discord.Color.red()
 
         embed = discord.Embed(
-            title=f"🚨 {int(threshold) if float(threshold).is_integer() else threshold}% Move Alert — ${ticker}",
+            title=f"🚨 Intraday Threshold Alert — ${ticker}",
             color=color,
             timestamp=datetime.now(timezone.utc),
         )
@@ -501,6 +501,7 @@ class AlertsCog(commands.Cog):
         embed.add_field(name="Prev Close", value=f"${prev_close:.2f}", inline=True)
         embed.add_field(name="Move", value=f"{pct_from_prev_close:+.2f}%", inline=True)
         embed.add_field(name="Date", value=as_of_et.astimezone(ET).date().isoformat(), inline=True)
+        embed.add_field(name="Threshold", value=str(zone), inline=True)
         embed.add_field(name="As of", value=as_of_et.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"), inline=True)
 
         mention_enabled = bool(getattr(self.config, "ALERTS_MENTION_ENABLED", False))
@@ -552,9 +553,8 @@ class AlertsCog(commands.Cog):
             ticker = ticker.upper().strip()
             try:
                 state = await self.db.get_intraday_state(ticker, trading_date)
+                prev_zone = (state.get("last_zone") if state else "0") or "0"
                 prev_close = state.get("open_price") if state else None  # DB column reused as prev_close baseline
-                alerted_5 = bool(state.get("alerted_5")) if state else False
-                alerted_10 = bool(state.get("alerted_10")) if state else False
                 last_alert_at = self._parse_db_timestamp(state.get("last_alert_at")) if state else None
 
                 if not prev_close:
@@ -570,20 +570,14 @@ class AlertsCog(commands.Cog):
 
                 current_price, as_of_et = latest
                 pct_from_prev_close = ((current_price - prev_close) / prev_close) * 100
+                curr_zone = self._zone_from_pct(pct_from_prev_close, t1, t2)
+                should_alert = self._should_send_zone_alert(prev_zone, curr_zone, t1, t2)
 
                 now_utc = datetime.now(timezone.utc)
                 cooldown_ok = force or (not last_alert_at) or ((now_utc - last_alert_at).total_seconds() >= cooldown)
 
                 new_last_alert_at = last_alert_at
-                # Threshold logic: at most one 5% and one 10% alert per ticker per trading day
-                did_alert = False
-                threshold_to_send: Optional[float] = None
-                if abs(pct_from_prev_close) >= t2 and (not alerted_10):
-                    threshold_to_send = t2
-                elif abs(pct_from_prev_close) >= t1 and (not alerted_5):
-                    threshold_to_send = t1
-
-                if threshold_to_send is not None and cooldown_ok:
+                if should_alert and cooldown_ok:
                     await self.send_intraday_alert(
                         alerts_channel,
                         guild,
@@ -591,28 +585,21 @@ class AlertsCog(commands.Cog):
                         prev_close=float(prev_close),
                         current_price=float(current_price),
                         pct_from_prev_close=float(pct_from_prev_close),
-                        threshold=float(threshold_to_send),
+                        zone=curr_zone,
                         as_of_et=as_of_et,
                     )
                     new_last_alert_at = now_utc
-                    did_alert = True
-                    if threshold_to_send == t1:
-                        alerted_5 = True
-                    if threshold_to_send == t2:
-                        alerted_10 = True
-                        # If we hit 10% first, consider 5% satisfied to avoid extra ping later.
-                        alerted_5 = True
                     await self.db.record_intraday_alert_event(
                         ticker=ticker,
                         trading_date=trading_date,
-                        zone=(f"+{threshold_to_send:.0f}" if pct_from_prev_close >= 0 else f"-{threshold_to_send:.0f}"),
+                        zone=str(curr_zone),
                         pct=float(pct_from_prev_close),
                         price=float(current_price),
                         created_at=now_utc,
                     )
-                    logger.info(f"[intraday] alert {ticker} threshold={threshold_to_send} pct={pct_from_prev_close:+.2f}%")
-                elif threshold_to_send is not None and not cooldown_ok:
-                    logger.debug(f"[intraday] cooldown suppress {ticker} threshold={threshold_to_send}")
+                    logger.info(f"[intraday] alert {ticker} zone={curr_zone} pct={pct_from_prev_close:+.2f}%")
+                elif should_alert and not cooldown_ok:
+                    logger.debug(f"[intraday] cooldown suppress {ticker} zone={curr_zone}")
 
                 # Persist state every poll (regardless of whether we alert)
                 # Note: DB column open_price is reused to store prev_close baseline for the day.
@@ -622,9 +609,7 @@ class AlertsCog(commands.Cog):
                     open_price=float(prev_close),
                     last_price=float(current_price),
                     last_pct=float(pct_from_prev_close),
-                    last_zone="0",
-                    alerted_5=bool(alerted_5),
-                    alerted_10=bool(alerted_10),
+                    last_zone=curr_zone,
                     last_alert_at=new_last_alert_at,
                     updated_at=now_utc,
                 )
@@ -650,7 +635,7 @@ class AlertsCog(commands.Cog):
         previous_zone: Optional[str] = None,
         force: bool = False,
     ):
-        """Compute threshold logic vs previous close baseline; posts to #alerts when it should."""
+        """Compute zone-crossing logic vs previous close baseline; posts to #alerts when it should."""
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -670,9 +655,23 @@ class AlertsCog(commands.Cog):
             t1, t2 = self._parse_intraday_thresholds()
 
             pct_from_prev_close = ((current - open) / open) * 100
+            curr_zone = self._zone_from_pct(pct_from_prev_close, t1, t2)
             state = await self.db.get_intraday_state(ticker, trading_date)
-            alerted_5 = bool(state.get("alerted_5")) if state else False
-            alerted_10 = bool(state.get("alerted_10")) if state else False
+            db_prev_zone = (state.get("last_zone") if state else "0") or "0"
+            prev_zone = (previous_zone or db_prev_zone).strip()
+
+            # Normalize prev_zone
+            valid_zones = {
+                "0",
+                f"+{int(t1) if t1.is_integer() else t1}",
+                f"-{int(t1) if t1.is_integer() else t1}",
+                f"+{int(t2) if t2.is_integer() else t2}",
+                f"-{int(t2) if t2.is_integer() else t2}",
+            }
+            if prev_zone not in valid_zones:
+                prev_zone = db_prev_zone
+
+            should_alert = self._should_send_zone_alert(prev_zone, curr_zone, t1, t2)
 
             now_utc = datetime.now(timezone.utc)
             cooldown = int(getattr(self.config, "INTRADAY_ALERT_COOLDOWN_SECONDS", 120) or 120)
@@ -681,13 +680,7 @@ class AlertsCog(commands.Cog):
 
             did_post = False
             new_last_alert_at = last_alert_at
-            threshold_to_send: Optional[float] = None
-            if abs(pct_from_prev_close) >= t2 and (not alerted_10):
-                threshold_to_send = t2
-            elif abs(pct_from_prev_close) >= t1 and (not alerted_5):
-                threshold_to_send = t1
-
-            if threshold_to_send is not None and cooldown_ok:
+            if should_alert and cooldown_ok:
                 await self.send_intraday_alert(
                     alerts_channel,
                     guild,
@@ -695,20 +688,15 @@ class AlertsCog(commands.Cog):
                     prev_close=float(open),
                     current_price=float(current),
                     pct_from_prev_close=float(pct_from_prev_close),
-                    threshold=float(threshold_to_send),
+                    zone=curr_zone,
                     as_of_et=now_et,
                 )
                 did_post = True
                 new_last_alert_at = now_utc
-                if threshold_to_send == t1:
-                    alerted_5 = True
-                if threshold_to_send == t2:
-                    alerted_10 = True
-                    alerted_5 = True
                 await self.db.record_intraday_alert_event(
                     ticker=ticker,
                     trading_date=trading_date,
-                    zone=(f"+{threshold_to_send:.0f}" if pct_from_prev_close >= 0 else f"-{threshold_to_send:.0f}"),
+                    zone=str(curr_zone),
                     pct=float(pct_from_prev_close),
                     price=float(current),
                     created_at=now_utc,
@@ -720,16 +708,14 @@ class AlertsCog(commands.Cog):
                 open_price=float(open),
                 last_price=float(current),
                 last_pct=float(pct_from_prev_close),
-                last_zone="0",
-                alerted_5=bool(alerted_5),
-                alerted_10=bool(alerted_10),
+                last_zone=curr_zone,
                 last_alert_at=new_last_alert_at,
                 updated_at=now_utc,
             )
 
             await interaction.followup.send(
                 f"ticker={ticker} prev_close={open:.2f} current={current:.2f} pct={pct_from_prev_close:+.2f}% "
-                f"alerted_5={alerted_5} alerted_10={alerted_10} cooldown_ok={cooldown_ok} posted={did_post}",
+                f"prev_zone={prev_zone} curr_zone={curr_zone} should_alert={should_alert} cooldown_ok={cooldown_ok} posted={did_post}",
                 ephemeral=True,
             )
         except Exception as e:
@@ -752,8 +738,7 @@ class AlertsCog(commands.Cog):
 
             state = await self.db.get_intraday_state(ticker, trading_date)
             prev_close = state.get("open_price") if state else None  # DB column reused as prev_close baseline
-            alerted_5 = bool(state.get("alerted_5")) if state else False
-            alerted_10 = bool(state.get("alerted_10")) if state else False
+            last_zone = (state.get("last_zone") if state else "0") or "0"
             last_alert_at = self._parse_db_timestamp(state.get("last_alert_at")) if state else None
 
             latest = await self.market_data.get_latest_rth_price_1m(ticker, timezone=ET)
@@ -763,8 +748,10 @@ class AlertsCog(commands.Cog):
                 current_price, as_of_et = latest
 
             pct_from_prev_close = None
+            curr_zone = None
             if prev_close and current_price:
                 pct_from_prev_close = ((current_price - prev_close) / prev_close) * 100
+                curr_zone = self._zone_from_pct(pct_from_prev_close, t1, t2)
 
             embed = discord.Embed(
                 title=f"🧪 Intraday Debug — ${ticker}",
@@ -777,8 +764,8 @@ class AlertsCog(commands.Cog):
             embed.add_field(name="Prev Close", value=f"${prev_close:.2f}" if prev_close else "N/A", inline=True)
             embed.add_field(name="Current (1m RTH)", value=f"${current_price:.2f}" if current_price else "N/A", inline=True)
             embed.add_field(name="Move", value=f"{pct_from_prev_close:+.2f}%" if pct_from_prev_close is not None else "N/A", inline=True)
-            embed.add_field(name="Alerted 5%", value=str(alerted_5), inline=True)
-            embed.add_field(name="Alerted 10%", value=str(alerted_10), inline=True)
+            embed.add_field(name="Zone", value=str(curr_zone or "N/A"), inline=True)
+            embed.add_field(name="Last Zone (DB)", value=str(last_zone), inline=True)
             embed.add_field(
                 name="Last Alert At (UTC)",
                 value=last_alert_at.strftime("%Y-%m-%d %H:%M:%S UTC") if last_alert_at else "N/A",
