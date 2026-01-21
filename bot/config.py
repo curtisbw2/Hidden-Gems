@@ -93,6 +93,19 @@ class Config:
     
     # Logging
     LOG_LEVEL: str = "INFO"
+
+    # Security (anti-impersonation / anti-bot)
+    SECURITY_IMPERSONATION_GUARD_ENABLED: bool = True
+    SECURITY_OWNER_USER_ID: Optional[int] = None  # Real owner's Discord user ID (recommended)
+    SECURITY_OWNER_NAME_ALIASES: str = ""  # Optional CSV list of names to match if owner isn't in guild cache
+    SECURITY_TRUSTED_BOT_IDS: str = ""  # Optional CSV list of allowed bot IDs
+    SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN: bool = False  # If True, ban any joining bot not in trusted list
+    SECURITY_IMPERSONATION_ACTION: str = "ban"  # ban | kick | quarantine
+    SECURITY_QUARANTINE_ROLE_ID: Optional[int] = None
+    SECURITY_QUARANTINE_ROLE_NAME: str = "Quarantine"
+    SECURITY_MIN_ACCOUNT_AGE_DAYS: int = 3  # Used as a supporting signal for impersonation matches
+    SECURITY_NAME_SIMILARITY_THRESHOLD: float = 0.84  # 0..1, used for fuzzy name matching (higher = stricter)
+    SECURITY_IMPOSTER_ANNOUNCE_CHANNEL_ID: Optional[int] = None  # Optional channel to announce "Imposter ejected"
     
     @classmethod
     def from_env(cls) -> "Config":
@@ -124,6 +137,10 @@ class Config:
         def get_str(key: str, default: str = "") -> str:
             val = os.getenv(key)
             return val if val is not None else default
+
+        def get_csv_str(key: str, default: str = "") -> str:
+            val = os.getenv(key)
+            return (val if val is not None else default).strip()
         
         guild_id = get_int("GUILD_ID")
         
@@ -190,6 +207,18 @@ class Config:
             DB_PATH=os.getenv("DB_PATH", "data/bot.db"),
             DATABASE_URL=os.getenv("DATABASE_URL"),
             LOG_LEVEL=os.getenv("LOG_LEVEL", "INFO"),
+
+            SECURITY_IMPERSONATION_GUARD_ENABLED=get_bool("SECURITY_IMPERSONATION_GUARD_ENABLED", True),
+            SECURITY_OWNER_USER_ID=get_int("SECURITY_OWNER_USER_ID"),
+            SECURITY_OWNER_NAME_ALIASES=get_csv_str("SECURITY_OWNER_NAME_ALIASES", ""),
+            SECURITY_TRUSTED_BOT_IDS=get_csv_str("SECURITY_TRUSTED_BOT_IDS", ""),
+            SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN=get_bool("SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN", False),
+            SECURITY_IMPERSONATION_ACTION=get_str("SECURITY_IMPERSONATION_ACTION", "ban").strip().lower(),
+            SECURITY_QUARANTINE_ROLE_ID=get_int("SECURITY_QUARANTINE_ROLE_ID"),
+            SECURITY_QUARANTINE_ROLE_NAME=get_str("SECURITY_QUARANTINE_ROLE_NAME", "Quarantine").strip(),
+            SECURITY_MIN_ACCOUNT_AGE_DAYS=get_int("SECURITY_MIN_ACCOUNT_AGE_DAYS", 3) or 3,
+            SECURITY_NAME_SIMILARITY_THRESHOLD=get_float("SECURITY_NAME_SIMILARITY_THRESHOLD", 0.84) or 0.84,
+            SECURITY_IMPOSTER_ANNOUNCE_CHANNEL_ID=get_int("SECURITY_IMPOSTER_ANNOUNCE_CHANNEL_ID"),
         )
     
     def get_role_ids(self) -> dict[str, Optional[int]]:

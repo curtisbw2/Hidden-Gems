@@ -291,6 +291,22 @@ All configuration is done via environment variables. See `.env.example` for all 
 - `ALERTS_ROLE_PANEL_CHANNEL_ID` - Channel to post the opt-in panel (recommended)
 - `ALERTS_ROLE_PANEL_CHANNEL_NAME` - Channel name fallback (default: "alerts-settings")
 
+### Security (Anti-Impersonation / Anti-Bot)
+
+If you’re dealing with bots attempting to impersonate the server owner, the bot can enforce join-time checks in `OnboardingCog.on_member_join` and take an action immediately.
+
+**Recommended settings:**
+- `SECURITY_IMPERSONATION_GUARD_ENABLED=true`
+- `SECURITY_OWNER_USER_ID=<real owner user id>` (strongly recommended)
+- `SECURITY_IMPERSONATION_ACTION=ban` (or `kick` / `quarantine`)
+- `SECURITY_MIN_ACCOUNT_AGE_DAYS=3` (raise to 7–14 if you want to be more aggressive)
+- `SECURITY_NAME_SIMILARITY_THRESHOLD=0.84` (raise to reduce false positives, lower to catch more variations)
+
+**Optional settings:**
+- `SECURITY_OWNER_NAME_ALIASES` - Comma-separated display-name aliases to match
+- `SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN=true` + `SECURITY_TRUSTED_BOT_IDS=...` - Ban/act on any bot account not explicitly allow-listed
+- `SECURITY_MIN_ACCOUNT_AGE_DAYS` - Supporting signal when owner avatar can’t be compared
+
 ### Alerts Role (Opt-In/Out)
 
 To let users self-serve alert pings:
