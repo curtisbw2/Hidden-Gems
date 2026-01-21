@@ -158,8 +158,10 @@ class Database:
                 last_price DOUBLE PRECISION,
                 last_pct DOUBLE PRECISION,
                 last_zone VARCHAR(10) DEFAULT '0',
-                alerted_5 BOOLEAN DEFAULT FALSE,
-                alerted_10 BOOLEAN DEFAULT FALSE,
+                alerted_p5 BOOLEAN DEFAULT FALSE,
+                alerted_p10 BOOLEAN DEFAULT FALSE,
+                alerted_n5 BOOLEAN DEFAULT FALSE,
+                alerted_n10 BOOLEAN DEFAULT FALSE,
                 last_alert_at TIMESTAMP WITH TIME ZONE,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 PRIMARY KEY (ticker, trading_date)
@@ -247,8 +249,10 @@ class Database:
         await conn.execute("ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()")
 
         # intraday_state
-        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_5 BOOLEAN DEFAULT FALSE")
-        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_10 BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_p5 BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_p10 BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_n5 BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE intraday_state ADD COLUMN IF NOT EXISTS alerted_n10 BOOLEAN DEFAULT FALSE")
     
     async def _create_schema_sqlite(self, db: aiosqlite.Connection):
         """Create SQLite database schema."""
@@ -333,8 +337,10 @@ class Database:
                 last_price REAL,
                 last_pct REAL,
                 last_zone TEXT DEFAULT '0',
-                alerted_5 INTEGER DEFAULT 0,
-                alerted_10 INTEGER DEFAULT 0,
+                alerted_p5 INTEGER DEFAULT 0,
+                alerted_p10 INTEGER DEFAULT 0,
+                alerted_n5 INTEGER DEFAULT 0,
+                alerted_n10 INTEGER DEFAULT 0,
                 last_alert_at TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (ticker, trading_date)
@@ -436,10 +442,14 @@ class Database:
 
         # intraday_state
         intraday_cols = await _columns("intraday_state")
-        if "alerted_5" not in intraday_cols:
-            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_5 INTEGER DEFAULT 0")
-        if "alerted_10" not in intraday_cols:
-            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_10 INTEGER DEFAULT 0")
+        if "alerted_p5" not in intraday_cols:
+            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_p5 INTEGER DEFAULT 0")
+        if "alerted_p10" not in intraday_cols:
+            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_p10 INTEGER DEFAULT 0")
+        if "alerted_n5" not in intraday_cols:
+            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_n5 INTEGER DEFAULT 0")
+        if "alerted_n10" not in intraday_cols:
+            await db.execute("ALTER TABLE intraday_state ADD COLUMN alerted_n10 INTEGER DEFAULT 0")
     
     @asynccontextmanager
     async def get_connection(self):
@@ -1084,8 +1094,10 @@ class Database:
         last_price: Optional[float],
         last_pct: Optional[float],
         last_zone: str,
-        alerted_5: bool = False,
-        alerted_10: bool = False,
+        alerted_p5: bool = False,
+        alerted_p10: bool = False,
+        alerted_n5: bool = False,
+        alerted_n10: bool = False,
         last_alert_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
     ) -> None:
@@ -1110,19 +1122,21 @@ class Database:
                 await conn.execute(
                     """
                     INSERT INTO intraday_state
-                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, alerted_5, alerted_10, last_alert_at, updated_at)
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, alerted_p5, alerted_p10, alerted_n5, alerted_n10, last_alert_at, updated_at)
                     VALUES
-                        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     ON CONFLICT (ticker, trading_date)
                     DO UPDATE SET
                         open_price = COALESCE($3, intraday_state.open_price),
                         last_price = $4,
                         last_pct = $5,
                         last_zone = $6,
-                        alerted_5 = $7,
-                        alerted_10 = $8,
-                        last_alert_at = $9,
-                        updated_at = $10
+                        alerted_p5 = $7,
+                        alerted_p10 = $8,
+                        alerted_n5 = $9,
+                        alerted_n10 = $10,
+                        last_alert_at = $11,
+                        updated_at = $12
                     """,
                     ticker,
                     self._pg_trading_date(trading_date),
@@ -1130,8 +1144,10 @@ class Database:
                     last_price,
                     last_pct,
                     last_zone,
-                    bool(alerted_5),
-                    bool(alerted_10),
+                    bool(alerted_p5),
+                    bool(alerted_p10),
+                    bool(alerted_n5),
+                    bool(alerted_n10),
                     last_alert_at,
                     updated_at,
                 )
@@ -1140,8 +1156,8 @@ class Database:
                 await db.execute(
                     """
                     INSERT OR REPLACE INTO intraday_state
-                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, alerted_5, alerted_10, last_alert_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, alerted_p5, alerted_p10, alerted_n5, alerted_n10, last_alert_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ticker,
@@ -1150,8 +1166,10 @@ class Database:
                         last_price,
                         last_pct,
                         last_zone,
-                        1 if alerted_5 else 0,
-                        1 if alerted_10 else 0,
+                        1 if alerted_p5 else 0,
+                        1 if alerted_p10 else 0,
+                        1 if alerted_n5 else 0,
+                        1 if alerted_n10 else 0,
                         sqlite_last_alert_at,
                         sqlite_updated_at,
                     ),
@@ -1233,109 +1251,6 @@ class Database:
                     """,
                     (ticker, trading_date, zone, pct, price, sqlite_created_at),
                 )
-
-    async def claim_intraday_zone_entry(
-        self,
-        *,
-        ticker: str,
-        trading_date: str,
-        prev_zone: str,
-        new_zone: str,
-        baseline_price: Optional[float] = None,
-        last_price: Optional[float] = None,
-        last_pct: Optional[float] = None,
-        now_utc: Optional[datetime] = None,
-    ) -> bool:
-        """
-        Atomically "claim" a zone entry so we only alert once per actual transition.
-
-        Returns True if this call successfully claimed the transition (i.e., should send alert),
-        False if another process/loop already claimed it or if no change happened.
-        """
-        if now_utc is None:
-            now_utc = datetime.now(timezone.utc)
-
-        prev_zone = (prev_zone or "0").strip()
-        new_zone = (new_zone or "0").strip()
-
-        if self.use_postgres:
-            async with self.pool.acquire() as conn:
-                # 1) Try insert (first time today) — only one will win
-                inserted = await conn.fetchrow(
-                    """
-                    INSERT INTO intraday_state
-                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
-                    VALUES
-                        ($1, $2, $3, $4, $5, $6, $7, $7)
-                    ON CONFLICT (ticker, trading_date) DO NOTHING
-                    RETURNING 1
-                    """,
-                    ticker,
-                    self._pg_trading_date(trading_date),
-                    baseline_price,
-                    last_price,
-                    last_pct,
-                    new_zone,
-                    now_utc,
-                )
-                if inserted:
-                    return True
-
-                # 2) Compare-and-set update: only claim if DB still has prev_zone
-                updated = await conn.fetchrow(
-                    """
-                    UPDATE intraday_state
-                    SET last_zone = $1, last_alert_at = $2, updated_at = $2
-                    WHERE ticker = $3 AND trading_date = $4 AND last_zone = $5
-                    RETURNING 1
-                    """,
-                    new_zone,
-                    now_utc,
-                    ticker,
-                    self._pg_trading_date(trading_date),
-                    prev_zone,
-                )
-                return bool(updated)
-        else:
-            async with self.get_connection() as db:
-                # 1) Try insert (first time today) — only one will win
-                cursor = await db.execute(
-                    """
-                    INSERT OR IGNORE INTO intraday_state
-                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        ticker,
-                        trading_date,
-                        baseline_price,
-                        last_price,
-                        last_pct,
-                        new_zone,
-                        now_utc.isoformat() if isinstance(now_utc, datetime) else now_utc,
-                        now_utc.isoformat() if isinstance(now_utc, datetime) else now_utc,
-                    ),
-                )
-                if cursor.rowcount and cursor.rowcount > 0:
-                    return True
-
-                # 2) Compare-and-set update: only claim if DB still has prev_zone
-                cursor2 = await db.execute(
-                    """
-                    UPDATE intraday_state
-                    SET last_zone = ?, last_alert_at = ?, updated_at = ?
-                    WHERE ticker = ? AND trading_date = ? AND last_zone = ?
-                    """,
-                    (
-                        new_zone,
-                        now_utc.isoformat(),
-                        now_utc.isoformat(),
-                        ticker,
-                        trading_date,
-                        prev_zone,
-                    ),
-                )
-                return bool(cursor2.rowcount and cursor2.rowcount > 0)
     
     # Import history
     async def record_import(
