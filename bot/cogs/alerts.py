@@ -583,6 +583,22 @@ class AlertsCog(commands.Cog):
 
                 new_last_alert_at = last_alert_at
                 if should_alert and cooldown_ok:
+                    # DB-level compare-and-set to prevent duplicate alerts while in same zone
+                    claimed = await self.db.claim_intraday_zone_entry(
+                        ticker=ticker,
+                        trading_date=trading_date,
+                        prev_zone=prev_zone,
+                        new_zone=curr_zone,
+                        baseline_price=float(prev_close),
+                        last_price=float(current_price),
+                        last_pct=float(pct_from_prev_close),
+                        now_utc=now_utc,
+                    )
+                    if not claimed:
+                        # Another instance/loop already claimed this transition
+                        should_alert = False
+
+                if should_alert and cooldown_ok:
                     await self.send_intraday_alert(
                         alerts_channel,
                         guild,

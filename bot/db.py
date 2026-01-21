@@ -1233,6 +1233,109 @@ class Database:
                     """,
                     (ticker, trading_date, zone, pct, price, sqlite_created_at),
                 )
+
+    async def claim_intraday_zone_entry(
+        self,
+        *,
+        ticker: str,
+        trading_date: str,
+        prev_zone: str,
+        new_zone: str,
+        baseline_price: Optional[float] = None,
+        last_price: Optional[float] = None,
+        last_pct: Optional[float] = None,
+        now_utc: Optional[datetime] = None,
+    ) -> bool:
+        """
+        Atomically "claim" a zone entry so we only alert once per actual transition.
+
+        Returns True if this call successfully claimed the transition (i.e., should send alert),
+        False if another process/loop already claimed it or if no change happened.
+        """
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+
+        prev_zone = (prev_zone or "0").strip()
+        new_zone = (new_zone or "0").strip()
+
+        if self.use_postgres:
+            async with self.pool.acquire() as conn:
+                # 1) Try insert (first time today) — only one will win
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO intraday_state
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
+                    VALUES
+                        ($1, $2, $3, $4, $5, $6, $7, $7)
+                    ON CONFLICT (ticker, trading_date) DO NOTHING
+                    RETURNING 1
+                    """,
+                    ticker,
+                    self._pg_trading_date(trading_date),
+                    baseline_price,
+                    last_price,
+                    last_pct,
+                    new_zone,
+                    now_utc,
+                )
+                if inserted:
+                    return True
+
+                # 2) Compare-and-set update: only claim if DB still has prev_zone
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE intraday_state
+                    SET last_zone = $1, last_alert_at = $2, updated_at = $2
+                    WHERE ticker = $3 AND trading_date = $4 AND last_zone = $5
+                    RETURNING 1
+                    """,
+                    new_zone,
+                    now_utc,
+                    ticker,
+                    self._pg_trading_date(trading_date),
+                    prev_zone,
+                )
+                return bool(updated)
+        else:
+            async with self.get_connection() as db:
+                # 1) Try insert (first time today) — only one will win
+                cursor = await db.execute(
+                    """
+                    INSERT OR IGNORE INTO intraday_state
+                        (ticker, trading_date, open_price, last_price, last_pct, last_zone, last_alert_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ticker,
+                        trading_date,
+                        baseline_price,
+                        last_price,
+                        last_pct,
+                        new_zone,
+                        now_utc.isoformat() if isinstance(now_utc, datetime) else now_utc,
+                        now_utc.isoformat() if isinstance(now_utc, datetime) else now_utc,
+                    ),
+                )
+                if cursor.rowcount and cursor.rowcount > 0:
+                    return True
+
+                # 2) Compare-and-set update: only claim if DB still has prev_zone
+                cursor2 = await db.execute(
+                    """
+                    UPDATE intraday_state
+                    SET last_zone = ?, last_alert_at = ?, updated_at = ?
+                    WHERE ticker = ? AND trading_date = ? AND last_zone = ?
+                    """,
+                    (
+                        new_zone,
+                        now_utc.isoformat(),
+                        now_utc.isoformat(),
+                        ticker,
+                        trading_date,
+                        prev_zone,
+                    ),
+                )
+                return bool(cursor2.rowcount and cursor2.rowcount > 0)
     
     # Import history
     async def record_import(
