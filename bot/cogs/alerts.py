@@ -492,8 +492,13 @@ class AlertsCog(commands.Cog):
         is_positive = pct_from_prev_close >= 0
         color = discord.Color.green() if is_positive else discord.Color.red()
 
+        # Format like the daily alert title: "🚨 X% Move Alert — $TICKER"
+        zone_str = (zone or "").strip()
+        zone_mag = zone_str.lstrip("+-")
+        title_pct = zone_mag if zone_mag else "Move"
+
         embed = discord.Embed(
-            title=f"🚨 Intraday Threshold Alert — ${ticker}",
+            title=f"🚨 {title_pct}% Move Alert — ${ticker}",
             color=color,
             timestamp=datetime.now(timezone.utc),
         )
@@ -501,7 +506,7 @@ class AlertsCog(commands.Cog):
         embed.add_field(name="Prev Close", value=f"${prev_close:.2f}", inline=True)
         embed.add_field(name="Move", value=f"{pct_from_prev_close:+.2f}%", inline=True)
         embed.add_field(name="Date", value=as_of_et.astimezone(ET).date().isoformat(), inline=True)
-        embed.add_field(name="Threshold", value=str(zone), inline=True)
+        embed.add_field(name="Threshold", value=f"{zone_str}%" if zone_str else "N/A", inline=True)
         embed.add_field(name="As of", value=as_of_et.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"), inline=True)
 
         mention_enabled = bool(getattr(self.config, "ALERTS_MENTION_ENABLED", False))
