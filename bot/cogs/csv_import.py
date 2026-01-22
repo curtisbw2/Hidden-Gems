@@ -13,6 +13,8 @@ from services.hashing import hash_email, normalize_email
 
 logger = logging.getLogger(__name__)
 
+PREMIUM_MEMBER_EMAIL_LIST_CHANNEL_ID = 1463604757594898483
+
 
 class CSVImportCog(commands.Cog):
     """CSV import functionality."""
@@ -132,10 +134,10 @@ class CSVImportCog(commands.Cog):
             await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
             return
         
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         
         if not file.filename.endswith(".csv"):
-            await interaction.followup.send("❌ Please upload a CSV file.", ephemeral=True)
+            await interaction.followup.send("❌ Please upload a CSV file.", ephemeral=False)
             return
         
         try:
@@ -146,7 +148,7 @@ class CSVImportCog(commands.Cog):
             email_hashes = self.parse_csv(csv_bytes)
             
             if not email_hashes:
-                await interaction.followup.send("❌ No valid email addresses found in CSV.", ephemeral=True)
+                await interaction.followup.send("❌ No valid email addresses found in CSV.", ephemeral=False)
                 return
             
             # Import to database
@@ -187,19 +189,33 @@ class CSVImportCog(commands.Cog):
                     timestamp=datetime.now(timezone.utc)
                 )
                 await log_channel.send(embed=embed)
-            
-            await interaction.followup.send(
+
+            summary = (
                 f"✅ Import complete!\n"
                 f"• Processed {len(email_hashes)} emails\n"
                 f"• {import_stats['total_active']} active subscribers\n"
                 f"• Granted Premium to {sync_stats['granted']} users\n"
-                f"• Revoked Premium from {sync_stats['revoked']} users",
-                ephemeral=True
+                f"• Revoked Premium from {sync_stats['revoked']} users"
             )
+
+            await interaction.followup.send(summary, ephemeral=False)
+
+            # Always mirror the summary to the premium-member-email-list channel.
+            # Avoid double-posting if the command was executed in that channel already.
+            try:
+                if interaction.guild and interaction.channel_id != PREMIUM_MEMBER_EMAIL_LIST_CHANNEL_ID:
+                    target_channel = self.bot.get_channel(PREMIUM_MEMBER_EMAIL_LIST_CHANNEL_ID)
+                    if target_channel is None:
+                        target_channel = await self.bot.fetch_channel(PREMIUM_MEMBER_EMAIL_LIST_CHANNEL_ID)
+                    await target_channel.send(summary)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to post import summary to channel {PREMIUM_MEMBER_EMAIL_LIST_CHANNEL_ID}: {e}"
+                )
             
         except Exception as e:
             logger.error(f"CSV import error: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ Error importing CSV: {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ Error importing CSV: {str(e)}", ephemeral=False)
     
     async def sync_premium_roles(self, guild: discord.Guild) -> dict:
         """Sync Premium roles based on paid emails. Returns stats."""
