@@ -106,6 +106,7 @@ class Config:
     SECURITY_MIN_ACCOUNT_AGE_DAYS: int = 3  # Used as a supporting signal for impersonation matches
     SECURITY_NAME_SIMILARITY_THRESHOLD: float = 0.84  # 0..1, used for fuzzy name matching (higher = stricter)
     SECURITY_IMPOSTER_ANNOUNCE_CHANNEL_ID: Optional[int] = None  # Optional channel to announce "Imposter ejected"
+    SECURITY_ENFORCE_ON_PROFILE_CHANGE: bool = True  # Enforce bans on name/avatar changes after join
     
     @classmethod
     def from_env(cls) -> "Config":
@@ -219,6 +220,7 @@ class Config:
             SECURITY_MIN_ACCOUNT_AGE_DAYS=get_int("SECURITY_MIN_ACCOUNT_AGE_DAYS", 3) or 3,
             SECURITY_NAME_SIMILARITY_THRESHOLD=get_float("SECURITY_NAME_SIMILARITY_THRESHOLD", 0.84) or 0.84,
             SECURITY_IMPOSTER_ANNOUNCE_CHANNEL_ID=get_int("SECURITY_IMPOSTER_ANNOUNCE_CHANNEL_ID"),
+            SECURITY_ENFORCE_ON_PROFILE_CHANGE=get_bool("SECURITY_ENFORCE_ON_PROFILE_CHANGE", True),
         )
     
     def get_role_ids(self) -> dict[str, Optional[int]]:

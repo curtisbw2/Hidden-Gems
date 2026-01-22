@@ -294,6 +294,7 @@ All configuration is done via environment variables. See `.env.example` for all 
 ### Security (Anti-Impersonation / Anti-Bot)
 
 If you’re dealing with bots attempting to impersonate the server owner, the bot can enforce join-time checks in `OnboardingCog.on_member_join` and take an action immediately.
+It can also enforce the same checks if a user changes their name/avatar after joining.
 
 **Recommended settings:**
 - `SECURITY_IMPERSONATION_GUARD_ENABLED=true`
@@ -306,6 +307,7 @@ If you’re dealing with bots attempting to impersonate the server owner, the bo
 - `SECURITY_OWNER_NAME_ALIASES` - Comma-separated display-name aliases to match
 - `SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN=true` + `SECURITY_TRUSTED_BOT_IDS=...` - Ban/act on any bot account not explicitly allow-listed
 - `SECURITY_MIN_ACCOUNT_AGE_DAYS` - Supporting signal when owner avatar can’t be compared
+- `SECURITY_ENFORCE_ON_PROFILE_CHANGE=true` - Also enforce bans on `on_member_update` / `on_user_update` (name/avatar changes after join)
 
 ### Alerts Role (Opt-In/Out)
 

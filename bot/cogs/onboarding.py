@@ -430,10 +430,9 @@ class OnboardingCog(commands.Cog):
             logger.error(f"Security ban error for {member}: {e}", exc_info=True)
             return False
 
-    async def _security_guard_on_join(self, member: discord.Member) -> bool:
+    async def _security_guard(self, member: discord.Member, *, event: str, check_untrusted_bots: bool) -> bool:
         """
-        Join-time guard. Returns True if we handled the join (ban/kick/quarantine),
-        meaning normal onboarding should stop.
+        Security guard. Returns True if we took an enforcement action (ban/kick/quarantine).
         """
         if not getattr(self.config, "SECURITY_IMPERSONATION_GUARD_ENABLED", True):
             return False
@@ -441,9 +440,9 @@ class OnboardingCog(commands.Cog):
         guild = member.guild
 
         trusted_bot_ids = _parse_int_set(getattr(self.config, "SECURITY_TRUSTED_BOT_IDS", ""))
-        if member.bot and getattr(self.config, "SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN", False):
+        if check_untrusted_bots and member.bot and getattr(self.config, "SECURITY_BAN_UNTRUSTED_BOTS_ON_JOIN", False):
             if member.id not in trusted_bot_ids:
-                reason = "Untrusted bot joined (not in SECURITY_TRUSTED_BOT_IDS)"
+                reason = f"Untrusted bot ({event}) (not in SECURITY_TRUSTED_BOT_IDS)"
                 action = (getattr(self.config, "SECURITY_IMPERSONATION_ACTION", "ban") or "ban").strip().lower()
                 took = await self._apply_security_action(member, reason=reason)
                 if took:
@@ -511,7 +510,7 @@ class OnboardingCog(commands.Cog):
                 pieces.append("avatar-match")
             if young_account:
                 pieces.append(f"new-account(<{min_days}d)")
-            reason = f"Potential owner impersonation ({', '.join(pieces)})"
+            reason = f"Potential owner impersonation ({event}) ({', '.join(pieces)})"
 
             action = (getattr(self.config, "SECURITY_IMPERSONATION_ACTION", "ban") or "ban").strip().lower()
             took = await self._apply_security_action(member, reason=reason)
@@ -533,6 +532,10 @@ class OnboardingCog(commands.Cog):
             return took
 
         return False
+
+    async def _security_guard_on_join(self, member: discord.Member) -> bool:
+        """Join-time guard wrapper (also handles optional untrusted-bot enforcement)."""
+        return await self._security_guard(member, event="join", check_untrusted_bots=True)
     
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -559,6 +562,62 @@ class OnboardingCog(commands.Cog):
                     logger.info(f"Auto-assigned free role to {member}")
                 except Exception as e:
                     logger.error(f"Failed to auto-assign free role to {member}: {e}")
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Enforce impersonation bans on in-guild profile changes (nickname/role avatar)."""
+        if not getattr(self.config, "SECURITY_ENFORCE_ON_PROFILE_CHANGE", True):
+            return
+
+        # Only run when something profile-like changed
+        try:
+            name_changed = _normalize_name(before.display_name) != _normalize_name(after.display_name)
+        except Exception:
+            name_changed = False
+        try:
+            avatar_changed = _avatar_fingerprint(before) != _avatar_fingerprint(after)
+        except Exception:
+            avatar_changed = False
+
+        if not (name_changed or avatar_changed):
+            return
+
+        try:
+            await self._security_guard(after, event="member_update", check_untrusted_bots=False)
+        except Exception as e:
+            logger.error(f"Security guard error on member_update for {after}: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_user_update(self, before: discord.User, after: discord.User):
+        """Enforce impersonation bans on global user profile changes (username/avatar)."""
+        if not getattr(self.config, "SECURITY_ENFORCE_ON_PROFILE_CHANGE", True):
+            return
+
+        # Fast reject if nothing relevant changed at the user level
+        try:
+            name_changed = (before.name != after.name) or ((before.global_name or "") != (after.global_name or ""))
+        except Exception:
+            name_changed = True
+        try:
+            avatar_changed = _avatar_fingerprint(before) != _avatar_fingerprint(after)
+        except Exception:
+            avatar_changed = True
+
+        if not (name_changed or avatar_changed):
+            return
+
+        # Apply to any guilds we share with this user (optionally narrowed by GUILD_ID)
+        guild_id = getattr(self.config, "GUILD_ID", None)
+        guilds = [g for g in self.bot.guilds if (not guild_id or g.id == int(guild_id))]
+
+        for g in guilds:
+            m = g.get_member(after.id)
+            if not m:
+                continue
+            try:
+                await self._security_guard(m, event="user_update", check_untrusted_bots=False)
+            except Exception as e:
+                logger.error(f"Security guard error on user_update for {m} in {g.id}: {e}", exc_info=True)
     
     @app_commands.command(name="start", description="Get started with Hidden Gems Research")
     async def start(self, interaction: discord.Interaction):
