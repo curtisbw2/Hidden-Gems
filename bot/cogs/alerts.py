@@ -504,16 +504,17 @@ class AlertsCog(commands.Cog):
         embed.add_field(name="As of", value=as_of_et.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S ET"), inline=True)
 
         mention_enabled = bool(getattr(self.config, "ALERTS_MENTION_ENABLED", False))
+        title_text = f"🚨 {int(threshold) if float(threshold).is_integer() else threshold}% Move Alert — ${ticker}"
         if mention_enabled:
             mention = self._alerts_role_mention(guild)
             await channel.send(
-                content=mention,
+                content=f"{mention}\n{title_text}",
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(roles=True),
             )
         else:
             # No role ping while testing / when disabled
-            await channel.send(embed=embed)
+            await channel.send(content=title_text, embed=embed)
 
     @tasks.loop(seconds=60.0)
     async def intraday_task(self):
