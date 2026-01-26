@@ -268,7 +268,7 @@ class AlertsCog(commands.Cog):
         embed.set_footer(text="Hidden Gems Research - The Gem Vault")
         
         try:
-            await channel.send(embed=embed)
+            await channel.send(embed=embed, delete_after=57600)  # 16 hours
         except Exception as e:
             logger.error(f"Failed to send alert: {e}")
     
@@ -511,10 +511,11 @@ class AlertsCog(commands.Cog):
                 content=f"{mention}\n{title_text}",
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(roles=True),
+                delete_after=57600,  # 16 hours
             )
         else:
             # No role ping while testing / when disabled
-            await channel.send(content=title_text, embed=embed)
+            await channel.send(content=title_text, embed=embed, delete_after=57600)  # 16 hours
 
     @tasks.loop(seconds=60.0)
     async def intraday_task(self):
